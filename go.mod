@@ -14,6 +14,7 @@ require (
 	github.com/diamondburned/ningen/v3 v3.0.1-0.20250703054403-e5dc4cf15e84
 	github.com/dustin/go-humanize v1.0.1
 	github.com/enescakir/emoji v1.0.0
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/ianlancetaylor/cgosymbolizer v0.0.0-20250410214317-b8ecc8b6bbe6
 	github.com/pkg/errors v0.9.1
 	github.com/sahilm/fuzzy v0.1.1
@@ -29,7 +30,6 @@ require (
 	github.com/alecthomas/chroma v0.10.0 // indirect
 	github.com/danieljoos/wincred v1.2.2 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/gorilla/schema v1.4.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/leonelquinteros/gotext v1.7.1 // indirect
