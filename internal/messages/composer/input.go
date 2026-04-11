@@ -287,17 +287,20 @@ func (i *Input) readClipboard() {
 	clipboard := display.Clipboard()
 	mimeTypes := clipboard.Formats().MIMETypes()
 
-	// mod: clipboard — filter to non-text MIME types. Chrome puts both
-	// text/html and image/png on the clipboard when copying an image;
-	// the original code bailed on the first text type it saw.
+	// mod: clipboard — filter to actual media MIME types (image/*, video/*,
+	// audio/*). Browsers put text/html, text/uri-list, x-special/* and other
+	// non-media types on the clipboard when copying URLs or links; we must
+	// ignore those to avoid creating phantom attachments when pasting a link.
 	var mediaMIMEs []string
 	for _, mime := range mimeTypes {
-		if !mimeIsText(mime) {
+		if strings.HasPrefix(mime, "image/") ||
+			strings.HasPrefix(mime, "video/") ||
+			strings.HasPrefix(mime, "audio/") {
 			mediaMIMEs = append(mediaMIMEs, mime)
 		}
 	}
 	if len(mediaMIMEs) == 0 {
-		return // text-only clipboard, let GTK handle it
+		return // no media on clipboard, let GTK handle text paste
 	}
 
 	clipboard.ReadAsync(i.ctx, mediaMIMEs, int(glib.PriorityDefault), func(res gio.AsyncResulter) {

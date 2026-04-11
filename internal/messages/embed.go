@@ -453,7 +453,12 @@ func newNormalEmbed(ctx context.Context, msg *discord.Message, msgEmbed *discord
 
 	if msgEmbed.Description != "" {
 		state := gtkcord.FromContext(ctx)
-		edesc := []byte(msgEmbed.Description)
+		// mod: embeds — strip markdown backslash escapes from embed descriptions.
+		// Discord's API sends escaped periods (e.g. "example\.com") to prevent
+		// auto-linking, but discordmd renders the raw backslash. Remove common
+		// escapes before parsing.
+		desc := stripMarkdownEscapes(msgEmbed.Description)
+		edesc := []byte(desc)
 		mnode := discordmd.ParseWithMessage(edesc, *state.Cabinet, msg, false)
 
 		v := mdrender.NewMarkdownViewer(ctx, edesc, mnode)
@@ -879,6 +884,32 @@ func openViewer(ctx context.Context, uri string, opts embed.Opts, dims ...int) {
 	}
 
 	embedViewer.Show()
+}
+
+// stripMarkdownEscapes removes backslash escapes from embed text.
+// Discord's API sends "example\.com" to prevent auto-linking; the
+// backslashes should not be rendered literally.
+func stripMarkdownEscapes(s string) string {
+	// Only strip backslashes before common punctuation that Discord escapes.
+	// Don't strip \\n, \\t, etc.
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			next := s[i+1]
+			// Standard markdown escapable characters.
+			if (next >= '!' && next <= '/') || // !"#$%&'()*+,-./
+				(next >= ':' && next <= '@') || // :;<=>?@
+				(next >= '[' && next <= '`') || // [\]^_`
+				(next >= '{' && next <= '~') { // {|}~
+				i++ // skip backslash, emit next char
+				b.WriteByte(next)
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func fixNatWrap(label *gtk.Label) {
