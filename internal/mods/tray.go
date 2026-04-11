@@ -111,6 +111,37 @@ func startSNI(win gtk.Widgetter) error {
 	// Export the dbusmenu for right-click context menu.
 	conn.Export(menu, menuDBusPath, menuIface)
 	conn.Export(menu, menuDBusPath, "org.freedesktop.DBus.Properties")
+	conn.Export(introspect.NewIntrospectable(&introspect.Node{
+		Name: menuDBusPath,
+		Interfaces: []introspect.Interface{{
+			Name: menuIface,
+			Methods: []introspect.Method{
+				{Name: "GetLayout", Args: []introspect.Arg{
+					{Name: "parentId", Type: "i", Direction: "in"},
+					{Name: "recursionDepth", Type: "i", Direction: "in"},
+					{Name: "propertyNames", Type: "as", Direction: "in"},
+					{Name: "revision", Type: "u", Direction: "out"},
+					{Name: "layout", Type: "(ia{sv}av)", Direction: "out"},
+				}},
+				{Name: "Event", Args: []introspect.Arg{
+					{Name: "id", Type: "i", Direction: "in"},
+					{Name: "eventId", Type: "s", Direction: "in"},
+					{Name: "data", Type: "v", Direction: "in"},
+					{Name: "timestamp", Type: "u", Direction: "in"},
+				}},
+				{Name: "AboutToShow", Args: []introspect.Arg{
+					{Name: "id", Type: "i", Direction: "in"},
+					{Name: "needUpdate", Type: "b", Direction: "out"},
+				}},
+			},
+			Signals: []introspect.Signal{
+				{Name: "LayoutUpdated", Args: []introspect.Arg{
+					{Name: "revision", Type: "u"},
+					{Name: "parent", Type: "i"},
+				}},
+			},
+		}},
+	}), menuDBusPath, "org.freedesktop.DBus.Introspectable")
 
 	// Register with watcher (KDE first, then freedesktop).
 	var registered bool
@@ -241,31 +272,37 @@ func (m *trayMenu) GetLayout(parentID int32, recursionDepth int32, propertyNames
 	V1 map[string]dbus.Variant
 	V2 []dbus.Variant
 }, *dbus.Error) {
-	type menuItem struct {
+	// Build the layout using the exact D-Bus signature Waybar expects.
+	// Each item is (ia{sv}av) — id, properties dict, children variants.
+	sig := dbus.SignatureOf(struct {
 		V0 int32
 		V1 map[string]dbus.Variant
 		V2 []dbus.Variant
-	}
+	}{})
 
-	show := menuItem{
-		V0: menuIDShow,
-		V1: map[string]dbus.Variant{
-			"label":   dbus.MakeVariant("Show/Hide"),
-			"enabled": dbus.MakeVariant(true),
-			"visible": dbus.MakeVariant(true),
-		},
-		V2: []dbus.Variant{},
+	showProps := map[string]dbus.Variant{
+		"label":       dbus.MakeVariant("Show/Hide"),
+		"enabled":     dbus.MakeVariant(true),
+		"visible":     dbus.MakeVariant(true),
+		"toggle-type": dbus.MakeVariant(""),
 	}
+	show := dbus.MakeVariantWithSignature(struct {
+		V0 int32
+		V1 map[string]dbus.Variant
+		V2 []dbus.Variant
+	}{menuIDShow, showProps, nil}, sig)
 
-	quit := menuItem{
-		V0: menuIDQuit,
-		V1: map[string]dbus.Variant{
-			"label":   dbus.MakeVariant("Quit"),
-			"enabled": dbus.MakeVariant(true),
-			"visible": dbus.MakeVariant(true),
-		},
-		V2: []dbus.Variant{},
+	quitProps := map[string]dbus.Variant{
+		"label":       dbus.MakeVariant("Quit"),
+		"enabled":     dbus.MakeVariant(true),
+		"visible":     dbus.MakeVariant(true),
+		"toggle-type": dbus.MakeVariant(""),
 	}
+	quit := dbus.MakeVariantWithSignature(struct {
+		V0 int32
+		V1 map[string]dbus.Variant
+		V2 []dbus.Variant
+	}{menuIDQuit, quitProps, nil}, sig)
 
 	root := struct {
 		V0 int32
@@ -276,10 +313,7 @@ func (m *trayMenu) GetLayout(parentID int32, recursionDepth int32, propertyNames
 		V1: map[string]dbus.Variant{
 			"children-display": dbus.MakeVariant("submenu"),
 		},
-		V2: []dbus.Variant{
-			dbus.MakeVariant(show),
-			dbus.MakeVariant(quit),
-		},
+		V2: []dbus.Variant{show, quit},
 	}
 
 	return m.revision, root, nil

@@ -2,6 +2,7 @@ package gtkcord
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"log/slog"
@@ -136,6 +137,38 @@ func Wrap(state *state.State) *State {
 // mod: stickerpicker — needed for raw API calls that arikawa doesn't support.
 func (s *State) Token() string {
 	return s.Client.Token
+}
+
+// FetchMeFromAPI fetches the current user from Discord's REST API directly.
+// This bypasses the cabinet cache to get the full user data including Avatar.
+// Safe to call from a goroutine.
+func (s *State) FetchMeFromAPI() *discord.User {
+	req, err := http.NewRequest("GET", "https://discord.com/api/v10/users/@me", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", s.Token())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Warn("FetchMeFromAPI: request failed", "err", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		slog.Warn("FetchMeFromAPI: bad status", "status", resp.StatusCode)
+		return nil
+	}
+
+	var me discord.User
+	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+		slog.Warn("FetchMeFromAPI: decode failed", "err", err)
+		return nil
+	}
+
+	slog.Info("FetchMeFromAPI: got avatar", "id", me.ID, "avatar", me.Avatar, "url", me.AvatarURL())
+	return &me
 }
 
 var rawEventsOnce sync.Once

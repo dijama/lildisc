@@ -72,7 +72,7 @@ func setCompactChildren(widget *gtk.Widget, compact bool) {
 			case "direct-channel-name", "direct-channel-readindicator", "direct-searchbar",
 				"user-bar-name", "user-bar-menu", "user-bar-status":
 				child.SetVisible(!compact)
-			case "direct-channel":
+			case "direct-channel", "user-bar":
 				// Center the avatar when compact by centering the row's box.
 				if compact {
 					child.SetHAlign(gtk.AlignCenter)

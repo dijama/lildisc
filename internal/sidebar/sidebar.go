@@ -99,8 +99,9 @@ func NewSidebar(ctx context.Context) *Sidebar {
 	s.Right.SetVisibleChild(s.placeholder)
 	s.Right.SetTransitionType(gtk.StackTransitionTypeCrossfade)
 
-	// mod: compactsidebar — collapse names to icons when sidebar is narrow
-	mods.SetupCompactSidebar(s.Right)
+	// mod: compactsidebar — collapse names to icons when sidebar is narrow.
+	// Applied to rightWrap (not s.Right) so it also reaches the user bar
+	// in the bottom bar of the ToolbarView.
 
 	userBar := newUserBar(ctx, []gtkutil.PopoverMenuItem{
 		gtkutil.MenuItem("Quick Switcher", "win.quick-switcher"),
@@ -124,6 +125,8 @@ func NewSidebar(ctx context.Context) *Sidebar {
 	rightWrap.SetHExpand(true) // mod: compactsidebar — fill available sidebar width
 	rightWrap.AddBottomBar(userBar)
 	rightWrap.SetContent(s.Right)
+
+	mods.SetupCompactSidebar(rightWrap)
 
 	s.Box = gtk.NewBox(gtk.OrientationHorizontal, 0)
 	s.Box.SetHExpand(true) // fill the Paned's allocated width so names expand
