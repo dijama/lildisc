@@ -580,7 +580,14 @@ func (e emojiNames) String(i int) string { return e[i] }
 func resolveEmojiPick(em *discord.Emoji, emojiGuild, currentGuild discord.GuildID, hasNitro bool) EmojiPickResult {
 	reaction := discord.NewAPIEmoji(em.ID, em.Name)
 
-	if hasNitro || emojiGuild == currentGuild {
+	// When FakeNitro is enabled, only use Discord's emoji syntax if the
+	// emoji belongs to the current guild (where it's always usable).
+	// For cross-server/DM usage, always send the CDN URL instead.
+	canUseNatively := emojiGuild == currentGuild && currentGuild.IsValid()
+	if !enableFakeNitro.Value() {
+		canUseNatively = canUseNatively || hasNitro
+	}
+	if canUseNatively {
 		if em.Animated {
 			return EmojiPickResult{
 				Text:     fmt.Sprintf("<a:%s:%s>", em.Name, em.ID),
