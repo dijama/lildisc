@@ -31,4 +31,6 @@ func HookState(ctx context.Context, state *gtkcord.State, win ActionWidget) {
 	slog.Info("initializing state-dependent lildisc mods")
 	initNotifications(ctx, state, win)
 	InitSearch(ctx, win)
+	// mod: friend nicknames — fetch from API in background
+	go state.FetchFriendNicknames()
 }

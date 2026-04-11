@@ -265,6 +265,18 @@ func (c *Content) Update(m *discord.Message, customs ...gtk.Widgetter) {
 		c.mdview = mdrender.NewMarkdownViewer(
 			ctxt.With(c.ctx, newMarkdownState()),
 			src, node, renderers...)
+		// mod: links — add underline to link tags. Chatkit's LinkTags
+		// only sets foreground color; we add underline for clarity.
+		// Use raw int (1 = PangoUnderlineSingle) since gotk4 may not
+		// serialize the pango.Underline enum through SetObjectProperty.
+		if aTag := c.mdview.TagTable().Lookup("a"); aTag != nil {
+			aTag.SetObjectProperty("underline", 1)
+			aTag.SetObjectProperty("underline-set", true)
+		}
+		if aHover := c.mdview.TagTable().Lookup("a:hover"); aHover != nil {
+			aHover.SetObjectProperty("underline", 1)
+			aHover.SetObjectProperty("underline-set", true)
+		}
 		c.append(c.mdview)
 	}
 

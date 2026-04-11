@@ -2,6 +2,7 @@ package sidebar
 
 import (
 	"context"
+	"log/slog"
 	"regexp"
 	"strconv"
 
@@ -115,13 +116,26 @@ func newUserBar(ctx context.Context, menuActions []gtkutil.PopoverMenuItem) *use
 		}
 	}
 
-	// mod: avatar — fetch from API async in case cabinet has stale/empty avatar
-	go func() {
-		apiMe := client.FetchMeFromAPI()
-		if apiMe != nil && apiMe.Avatar != "" {
-			glib.IdleAdd(func() { b.updateUser(apiMe) })
-		}
-	}()
+	// mod: avatar — fetch and save avatar to local file if not cached.
+	// Bypasses gotkit's image cache entirely to avoid stale/404 issues.
+	if mods.LocalAvatarPath() == "" && me != nil && me.Avatar != "" {
+		token := client.Token()
+		meID := me.ID.String()
+		meAvatar := me.Avatar
+		go func() {
+			mods.FetchAndSaveAvatar(token, meID, meAvatar)
+			glib.IdleAdd(func() { b.updateUser(me) })
+		}()
+	} else if me != nil && me.Avatar == "" {
+		go func() {
+			apiMe := client.FetchMeFromAPI()
+			if apiMe != nil && apiMe.Avatar != "" {
+				token := client.Token()
+				mods.FetchAndSaveAvatar(token, apiMe.ID.String(), apiMe.Avatar)
+				glib.IdleAdd(func() { b.updateUser(apiMe) })
+			}
+		}()
+	}
 
 	return &b
 }
@@ -129,6 +143,11 @@ func newUserBar(ctx context.Context, menuActions []gtkutil.PopoverMenuItem) *use
 var discriminatorRe = regexp.MustCompile(`#\d{1,4}$`)
 
 func (b *userBar) updateUser(me *discord.User) {
+	slog.Info("userBar.updateUser",
+		"id", me.ID,
+		"username", me.Username,
+		"avatar", me.Avatar,
+		"url", gtkcord.InjectAvatarSize(me.AvatarURL()))
 	tag := me.Username
 	if v, _ := strconv.Atoi(me.Discriminator); v != 0 {
 		tag += `<span size="smaller">` + "#" + me.Discriminator + "</span>"
@@ -147,7 +166,11 @@ func (b *userBar) updateUser(me *discord.User) {
 	}
 
 	b.avatar.SetText(displayName)
-	b.avatar.SetFromURL(gtkcord.InjectAvatarSize(me.AvatarURL()))
+	// mod: avatar — load from local cached file, bypassing gotkit's
+	// image cache entirely. See ensureLocalAvatar().
+	if path := mods.LocalAvatarPath(); path != "" {
+		b.avatar.SetFromURL("file://" + path)
+	}
 	b.name.SetMarkup(name)
 	b.name.SetTooltipMarkup(name)
 }

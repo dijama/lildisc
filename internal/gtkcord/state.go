@@ -171,6 +171,113 @@ func (s *State) FetchMeFromAPI() *discord.User {
 	return &me
 }
 
+// --- mod: friend nicknames ---
+// The pinned ningen version's RelationshipState only exposes RelationshipType,
+// not the full Relationship struct with Nickname. We fetch friend nicknames
+// from the Discord REST API and cache them.
+
+type friendNicknameCache struct {
+	mu    sync.RWMutex
+	nicks map[discord.UserID]string
+}
+
+var friendNicknames friendNicknameCache
+
+func (c *friendNicknameCache) get(id discord.UserID) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.nicks == nil {
+		return ""
+	}
+	return c.nicks[id]
+}
+
+func (c *friendNicknameCache) loaded() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.nicks != nil
+}
+
+// friendNicksCacheFile returns the path to the friend nicknames cache.
+func friendNicksCacheFile() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "lildisc", "api_cache", "friend_nicknames.json")
+}
+
+// FetchFriendNicknames loads friend nicknames from disk cache first,
+// then falls back to the Discord API. Safe to call from a goroutine.
+func (s *State) FetchFriendNicknames() {
+	if friendNicknames.loaded() {
+		return
+	}
+
+	// Try disk cache first.
+	if path := friendNicksCacheFile(); path != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			var nicks map[discord.UserID]string
+			if json.Unmarshal(data, &nicks) == nil && len(nicks) > 0 {
+				friendNicknames.mu.Lock()
+				friendNicknames.nicks = nicks
+				friendNicknames.mu.Unlock()
+				slog.Info("FetchFriendNicknames: loaded from cache", "count", len(nicks))
+				return
+			}
+		}
+	}
+
+	// Fetch from API.
+	req, err := http.NewRequest("GET", "https://discord.com/api/v10/users/@me/relationships", nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", s.Token())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Warn("FetchFriendNicknames: request failed", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		slog.Warn("FetchFriendNicknames: bad status", "status", resp.StatusCode)
+		return
+	}
+
+	var rels []struct {
+		ID       discord.UserID `json:"id"`
+		Nickname *string        `json:"nickname"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rels); err != nil {
+		slog.Warn("FetchFriendNicknames: decode failed", "err", err)
+		return
+	}
+
+	nicks := make(map[discord.UserID]string)
+	for _, r := range rels {
+		if r.Nickname != nil && *r.Nickname != "" {
+			nicks[r.ID] = *r.Nickname
+		}
+	}
+
+	friendNicknames.mu.Lock()
+	friendNicknames.nicks = nicks
+	friendNicknames.mu.Unlock()
+
+	// Save to disk.
+	if path := friendNicksCacheFile(); path != "" {
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		if data, err := json.Marshal(nicks); err == nil {
+			os.WriteFile(path, data, 0o644)
+		}
+	}
+
+	slog.Info("FetchFriendNicknames: loaded from API", "count", len(nicks))
+}
+
 var rawEventsOnce sync.Once
 
 func dumpRawEvents(state *state.State, dir string) {
@@ -455,6 +562,18 @@ func (s *State) MemberMarkup(gID discord.GuildID, u *discord.GuildUser, mods ...
 	var suffix string
 	var prefixMods []author.MarkupMod
 
+	// mod: friend nicknames — if the user set a personal nickname for this
+	// person (via Relationships), use it as the primary display name.
+	hasFriendNick := false
+	if nick := friendNicknames.get(u.ID); nick != "" {
+		suffix += fmt.Sprintf(
+			` <span weight="normal">(%s)</span>`,
+			html.EscapeString(name),
+		)
+		name = nick
+		hasFriendNick = true
+	}
+
 	if gID.IsValid() {
 		if u.Member == nil {
 			u.Member, _ = s.Cabinet.Member(gID, u.ID)
@@ -465,7 +584,8 @@ func (s *State) MemberMarkup(gID discord.GuildID, u *discord.GuildUser, mods ...
 			goto noMember
 		}
 
-		if u.Member != nil && u.Member.Nick != "" {
+		// Guild nickname — only override if no friend nickname was already applied.
+		if u.Member != nil && u.Member.Nick != "" && !hasFriendNick {
 			name = u.Member.Nick
 			suffix += fmt.Sprintf(
 				` <span weight="normal">(%s)</span>`,

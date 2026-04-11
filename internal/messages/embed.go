@@ -343,6 +343,8 @@ func newEmbedGroup(ctx context.Context, msg *discord.Message, group []discord.Em
 	grid.SetColumnSpacing(4)
 	grid.SetRowSpacing(4)
 	grid.SetColumnHomogeneous(true)
+	grid.SetRowHomogeneous(true)
+	grid.SetHExpand(true)
 
 	cols := 2
 	imgIdx := 0
@@ -363,7 +365,11 @@ func newEmbedGroup(ctx context.Context, msg *discord.Message, group []discord.Em
 		halfW := maxEmbedWidth.Value() / 2
 		halfH := maxImageHeight.Value() / 2
 		image := embed.New(ctx, halfW, halfH, imgOpts)
-		image.SetSizeRequest(int(img.Width), int(img.Height))
+		image.SetHExpand(true)
+		image.SetVExpand(true)
+		// mod: embeds — fill grid cell: let the Picture scale to cover
+		// available space instead of constraining to intrinsic size.
+		image.Thumbnail.SetContentFit(gtk.ContentFitCover)
 		imgViewURL := string(img.Proxy)
 		if imgViewURL == "" {
 			imgViewURL = string(img.URL)
@@ -599,11 +605,21 @@ func newNormalEmbed(ctx context.Context, msg *discord.Message, msgEmbed *discord
 		opts := defaultEmbedOpts
 		switch msgEmbed.Type {
 		case discord.NormalEmbed, discord.ImageEmbed:
-			// mod: embeds — rich embeds with a video field (e.g. Twitter/X
-			// video tweets) need video type so the click handler works
+			// mod: embeds — rich embeds with a video field.
+			// Twitter/fxtwitter "GIFs" have "tweet_video" in the URL and
+			// are short loops — treat as GIFV for inline autoplay.
+			// Other video embeds get click-to-play.
 			if msgEmbed.Video != nil {
-				opts.Type = embed.EmbedTypeVideo
-				opts.Autoplay = mods.AutoPlayVideos.Value()
+				videoURL := string(msgEmbed.Video.URL)
+				if strings.Contains(videoURL, "tweet_video") ||
+					strings.HasSuffix(videoURL, ".mp4") ||
+					strings.HasSuffix(videoURL, ".webm") {
+					opts.Type = embed.EmbedTypeGIFV
+					opts.Autoplay = true
+				} else {
+					opts.Type = embed.EmbedTypeVideo
+					opts.Autoplay = mods.AutoPlayVideos.Value()
+				}
 			} else {
 				opts.Type = mods.TypeFromURL(thumb.Proxy)
 				if opts.Type == embed.EmbedTypeGIF {
@@ -644,9 +660,18 @@ func newNormalEmbed(ctx context.Context, msg *discord.Message, msgEmbed *discord
 		// when opts.Type is GIFV. Passing the .mp4 URL triggers the video
 		// download + autoplay path in chatkit.
 		if opts.Type == embed.EmbedTypeGIFV && msgEmbed.Video != nil {
-			videoURL := string(msgEmbed.Video.Proxy)
+			// mod: embeds — for GIFV, prefer the direct Video.URL over
+			// Discord's proxy. The proxy URL is a Discord CDN redirect
+			// that may not be playable. The source URL from fxtwitter/
+			// fixupx is a direct media file.
+			videoURL := string(msgEmbed.Video.URL)
 			if videoURL == "" {
-				videoURL = string(msgEmbed.Video.URL)
+				videoURL = string(msgEmbed.Video.Proxy)
+			}
+			// Animated webp can't be played by GTK — swap to mp4.
+			// Twitter serves both at the same path.
+			if strings.HasSuffix(videoURL, ".webp") {
+				videoURL = strings.TrimSuffix(videoURL, ".webp") + ".mp4"
 			}
 			mods.LazyLoad(image, func() { image.SetFromURL(videoURL) })
 		} else if gifOverrideURL != "" {
@@ -692,13 +717,24 @@ func newNormalEmbed(ctx context.Context, msg *discord.Message, msgEmbed *discord
 					return
 				}
 
-				// mod: embeds — resolve video URL: prefer proxy, fall back to direct.
-				// For YouTube and similar sites, Video.URL is an embed/iframe URL
-				// (e.g. youtube.com/embed/ID) that yt-dlp can't handle. Use the
-				// top-level embed URL (the original watch link) for those hosts.
-				videoURL := string(msgEmbed.Video.Proxy)
-				if videoURL == "" {
+				// mod: embeds — resolve video URL. For GIFV (fxtwitter etc.),
+				// prefer direct URL over proxy since proxy may redirect to
+				// Discord CDN. For regular videos, prefer proxy then direct.
+				var videoURL string
+				if opts.Type == embed.EmbedTypeGIFV {
 					videoURL = string(msgEmbed.Video.URL)
+					if videoURL == "" {
+						videoURL = string(msgEmbed.Video.Proxy)
+					}
+				} else {
+					videoURL = string(msgEmbed.Video.Proxy)
+					if videoURL == "" {
+						videoURL = string(msgEmbed.Video.URL)
+					}
+				}
+				// Animated webp → mp4 swap for Twitter GIFs.
+				if strings.HasSuffix(videoURL, ".webp") {
+					videoURL = strings.TrimSuffix(videoURL, ".webp") + ".mp4"
 				}
 				if msgEmbed.URL != "" && mods.IsVideoHost(videoURL) {
 					videoURL = msgEmbed.URL

@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -94,14 +96,13 @@ func (s guildSticker) matchesQuery(query string) bool {
 	return false
 }
 
-// stickerCache caches guild stickers to avoid repeated API calls.
+// stickerCache caches guild stickers in memory and on disk.
 var (
 	stickerCacheMu sync.Mutex
 	stickerCache   = make(map[discord.GuildID][]guildSticker)
 )
 
-// fetchGuildStickers fetches stickers for a guild via the Discord REST API.
-// arikawa v3 doesn't have a sticker API, so we make the request directly.
+// fetchGuildStickers loads stickers from disk cache first, then API as fallback.
 func fetchGuildStickers(token string, guildID discord.GuildID) ([]guildSticker, error) {
 	stickerCacheMu.Lock()
 	if cached, ok := stickerCache[guildID]; ok {
@@ -110,6 +111,17 @@ func fetchGuildStickers(token string, guildID discord.GuildID) ([]guildSticker, 
 	}
 	stickerCacheMu.Unlock()
 
+	// Try disk cache first (no expiry — only refreshed manually).
+	cacheFile := fmt.Sprintf("stickers_%s.json", guildID)
+	var stickers []guildSticker
+	if loadCachedJSON(cacheFile, 0, &stickers) {
+		stickerCacheMu.Lock()
+		stickerCache[guildID] = stickers
+		stickerCacheMu.Unlock()
+		return stickers, nil
+	}
+
+	// Fetch from API.
 	url := fmt.Sprintf("https://discord.com/api/v10/guilds/%s/stickers", guildID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -128,23 +140,25 @@ func fetchGuildStickers(token string, guildID discord.GuildID) ([]guildSticker, 
 		return nil, fmt.Errorf("discord API returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	var stickers []guildSticker
 	if err := json.NewDecoder(resp.Body).Decode(&stickers); err != nil {
 		return nil, err
 	}
 
+	// Save to memory and disk.
 	stickerCacheMu.Lock()
 	stickerCache[guildID] = stickers
 	stickerCacheMu.Unlock()
+	saveCachedJSON(cacheFile, stickers)
 
 	return stickers, nil
 }
 
-// InvalidateStickerCache clears cached stickers for a guild.
+// InvalidateStickerCache clears cached stickers for a guild (memory and disk).
 func InvalidateStickerCache(guildID discord.GuildID) {
 	stickerCacheMu.Lock()
 	delete(stickerCache, guildID)
 	stickerCacheMu.Unlock()
+	os.Remove(filepath.Join(apiCacheDir(), fmt.Sprintf("stickers_%s.json", guildID)))
 }
 
 // SendSticker sends a message containing only a sticker to the given channel.
@@ -210,6 +224,16 @@ func fetchDefaultStickerPacks(token string) []defaultStickerPack {
 	}
 	defaultPacksMu.Unlock()
 
+	// Try disk cache first.
+	var packs []defaultStickerPack
+	if loadCachedJSON("default_sticker_packs.json", 0, &packs) {
+		defaultPacksMu.Lock()
+		defaultPacksCache = packs
+		defaultPacksMu.Unlock()
+		return packs
+	}
+
+	// Fetch from API.
 	req, err := http.NewRequest("GET", "https://discord.com/api/v10/sticker-packs", nil)
 	if err != nil {
 		return nil
@@ -234,6 +258,7 @@ func fetchDefaultStickerPacks(token string) []defaultStickerPack {
 	defaultPacksMu.Lock()
 	defaultPacksCache = data.Packs
 	defaultPacksMu.Unlock()
+	saveCachedJSON("default_sticker_packs.json", data.Packs)
 
 	return data.Packs
 }
