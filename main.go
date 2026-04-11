@@ -53,6 +53,36 @@ var _ = cssutil.WriteCSS(`
 	.md-textblock {
 		line-height: 1.35em;
 	}
+
+	/* Blockquotes: tighter line spacing than regular text.
+	   The 1.35em base line-height is too airy inside > quotes. */
+	.md-blockquote .md-textblock {
+		line-height: 1.15em;
+	}
+
+	/* Code blocks: reduce excess bottom padding inside the scroll frame.
+	   Upstream has padding: 4px 6px on the text; the scroll propagation
+	   adds extra dead space below short blocks. */
+	.md-codeblock-frame textview {
+		padding: 4px 6px 2px 6px;
+	}
+	.md-codeblock-frame scrolledwindow {
+		margin-bottom: 0;
+		padding-bottom: 0;
+	}
+
+	/* Reply previews: give the content a bit more breathing room.
+	   The 0.9em font + tight blockquote padding makes replies feel cramped. */
+	.message-reply-box {
+		padding-top: 2px;
+		padding-bottom: 4px;
+	}
+	.message-reply-box .mauthor-chip {
+		margin-bottom: 1px;
+	}
+	.message-reply-content {
+		margin-top: 1px;
+	}
 `)
 
 func init() {

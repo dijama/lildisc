@@ -42,10 +42,10 @@ var AutoPlayVideos = prefs.NewBool(false, prefs.PropMeta{
 	Description: "Show video embeds with animated thumbnails where available.",
 })
 
-var PreferGIF = prefs.NewBool(true, prefs.PropMeta{
+var PreferGIF = prefs.NewBool(false, prefs.PropMeta{
 	Name:        "Prefer GIF over MP4",
 	Section:     "Mods",
-	Description: "For Tenor/Giphy, load the actual .gif instead of the .mp4 video version.",
+	Description: "For Tenor/Giphy, load the actual .gif instead of the .mp4 video version. Note: GIFs display as static images; the MP4 video path supports animation.",
 })
 
 // GIFVToGIF attempts to find a real .gif URL for a GIFV embed (Tenor/Giphy).

@@ -43,6 +43,11 @@ type ChatPage struct {
 
 	tabView *adw.TabView
 
+	// Responsive collapse: when the window is narrow, the sidebar hides
+	// and a toggle button appears in the header.
+	back        *backbutton.BackButton
+	isCollapsed bool
+
 	lastGuildState   *app.TypedSingleState[discord.GuildID]
 	lastChannelState *app.TypedState[discord.ChannelID]
 
@@ -101,13 +106,13 @@ func NewChatPage(ctx context.Context, w *Window) *ChatPage {
 	})
 
 	p.Sidebar = sidebar.NewSidebar(ctx)
-	p.Sidebar.SetHAlign(gtk.AlignStart)
+	p.Sidebar.SetHAlign(gtk.AlignFill)
 
 	p.rightTitle = adw.NewBin()
 	p.rightTitle.AddCSSClass("right-header-bin")
 	p.rightTitle.SetHExpand(true)
 
-	back := backbutton.New()
+	p.back = backbutton.New()
 
 	newTabButton := gtk.NewButtonFromIconName("list-add-symbolic")
 	newTabButton.SetTooltipText("Open a New Tab")
@@ -118,9 +123,9 @@ func NewChatPage(ctx context.Context, w *Window) *ChatPage {
 	p.RightHeader.AddCSSClass("right-header")
 	p.RightHeader.SetShowStartTitleButtons(false)
 	p.RightHeader.SetShowEndTitleButtons(true)
-	p.RightHeader.SetShowBackButton(false) // this is useless with OverlaySplitView
+	p.RightHeader.SetShowBackButton(false)
 	p.RightHeader.SetShowTitle(false)
-	p.RightHeader.PackStart(back)
+	p.RightHeader.PackStart(p.back)
 	p.RightHeader.PackStart(p.rightTitle)
 	p.RightHeader.PackEnd(newTabButton)
 
@@ -149,7 +154,53 @@ func NewChatPage(ctx context.Context, w *Window) *ChatPage {
 	p.Paned.SetPosition(300)
 	p.Paned.SetWideHandle(true)
 
-	_ = back // back button not needed with Paned
+	// Responsive collapse: when the window is narrow, hide the sidebar
+	// and show a toggle button in the header (like the original Dissent).
+	// This preserves the draggable Paned at normal widths.
+	var savedPosition int
+	p.back.ConnectClicked(func() {
+		if !p.isCollapsed {
+			return
+		}
+		showing := p.Sidebar.Visible()
+		if showing {
+			// Hide sidebar
+			savedPosition = p.Paned.Position()
+			p.Sidebar.SetVisible(false)
+			p.Paned.SetPosition(0)
+			p.back.SetActive(false)
+		} else {
+			// Show sidebar as overlay
+			p.Sidebar.SetVisible(true)
+			if savedPosition < 200 {
+				savedPosition = 300
+			}
+			p.Paned.SetPosition(savedPosition)
+			p.back.SetActive(true)
+		}
+	})
+
+	breakpoint := adw.NewBreakpoint(adw.BreakpointConditionParse("max-width: 550sp"))
+	breakpoint.ConnectApply(func() {
+		p.isCollapsed = true
+		savedPosition = p.Paned.Position()
+		p.Sidebar.SetVisible(false)
+		p.Paned.SetPosition(0)
+		p.back.SetVisible(true)
+		p.back.SetActive(false)
+		p.RightHeader.SetShowStartTitleButtons(true)
+	})
+	breakpoint.ConnectUnapply(func() {
+		p.isCollapsed = false
+		p.Sidebar.SetVisible(true)
+		if savedPosition < 200 {
+			savedPosition = 300
+		}
+		p.Paned.SetPosition(savedPosition)
+		p.back.SetVisible(false)
+		p.RightHeader.SetShowStartTitleButtons(false)
+	})
+	w.AddBreakpoint(breakpoint)
 
 	state := gtkcord.FromContext(ctx)
 	w.ConnectDestroy(state.AddHandler(

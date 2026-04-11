@@ -1072,6 +1072,18 @@ func (v *View) SendMessage(sendingMsg composer.SendingMessage) {
 	// Use the Background context so things keep getting updated when we switch
 	// away.
 	gtkutil.Async(context.Background(), func() func() {
+		// mod: stickerpicker — sticker messages use raw API since arikawa
+		// v3's SendMessageData doesn't have a sticker_ids field.
+		if len(sendingMsg.StickerIDs) > 0 {
+			err := mods.SendSticker(state.Token(), m.ChannelID, sendingMsg.StickerIDs[0], m.Reference)
+			return func() {
+				msg.RemoveCSSClass("message-sending")
+				if err != nil {
+					uploading.AppendError(err)
+				}
+			}
+		}
+
 		sendData := api.SendMessageData{
 			Content:   m.Content,
 			Reference: m.Reference,

@@ -76,6 +76,7 @@ type SendingMessage struct {
 	Files        []*File
 	ReplyingTo   discord.MessageID
 	ReplyMention bool
+	StickerIDs   []discord.StickerID // mod: stickerpicker
 }
 
 // Controller is the parent Controller for a View.
@@ -128,9 +129,11 @@ type View struct {
 	bigBox *gtk.Box
 	topBox *gtk.Box
 
-	rightBox    *gtk.Box
-	emojiButton *gtk.MenuButton
-	sendButton  *gtk.Button
+	rightBox      *gtk.Box
+	emojiButton   *gtk.MenuButton
+	gifButton     *gtk.MenuButton    // mod: gifpicker
+	stickerButton *gtk.MenuButton    // mod: stickerpicker
+	sendButton    *gtk.Button
 
 	leftBox      *gtk.Box
 	uploadButton *gtk.Button
@@ -260,6 +263,44 @@ func NewView(ctx context.Context, ctrl Controller, chID discord.ChannelID) *View
 		v.emojiButton.AddCSSClass("flat")
 		v.emojiButton.SetTooltipText(locale.Get("Choose Emoji"))
 		v.emojiButton.SetPopover(v.EmojiChooser)
+	}
+
+	// mod: gifpicker — GIF search button
+	if gifPicker := mods.NewGifPickerPopover(ctx, func(gifURL string) {
+		v.insertEmoji(gifURL)
+		v.send()
+	}); gifPicker != nil {
+		v.gifButton = gtk.NewMenuButton()
+		v.gifButton.SetLabel("GIF")
+		v.gifButton.AddCSSClass("flat")
+		v.gifButton.SetTooltipText(locale.Get("Search GIFs"))
+		v.gifButton.SetPopover(gifPicker)
+	}
+
+	// mod: stickerpicker — resolve guild ID for sticker scope
+	var stickerGuildID discord.GuildID
+	if gState := gtkcord.FromContext(ctx); gState != nil {
+		if ch, err := gState.Cabinet.Channel(chID); err == nil {
+			stickerGuildID = ch.GuildID
+		}
+	}
+
+	// mod: stickerpicker — Sticker picker button
+	if stickerPicker := mods.NewStickerPickerPopover(ctx, stickerGuildID, func(result mods.StickerPickResult) {
+		v.ctrl.SendMessage(SendingMessage{
+			StickerIDs:   []discord.StickerID{result.StickerID},
+			ReplyingTo:   v.state.id,
+			ReplyMention: v.state.replying == replyingMention,
+		})
+		if v.state.replying != notReplying {
+			v.ctrl.StopReplying()
+		}
+	}); stickerPicker != nil {
+		v.stickerButton = gtk.NewMenuButton()
+		v.stickerButton.SetIconName("emoji-symbols-symbolic")
+		v.stickerButton.AddCSSClass("flat")
+		v.stickerButton.SetTooltipText(locale.Get("Choose Sticker"))
+		v.stickerButton.SetPopover(stickerPicker)
 	}
 
 	v.sendButton = gtk.NewButtonFromIconName(sendIcon)
@@ -402,9 +443,19 @@ func (v *View) setActions(actions actions) {
 }
 
 func (v *View) resetAction() {
+	// mod: gifpicker, stickerpicker — add picker buttons to right side
+	rightButtons := []actionButton{existingActionButton{v.emojiButton}}
+	if v.gifButton != nil {
+		rightButtons = append(rightButtons, existingActionButton{v.gifButton})
+	}
+	if v.stickerButton != nil {
+		rightButtons = append(rightButtons, existingActionButton{v.stickerButton})
+	}
+	rightButtons = append(rightButtons, existingActionButton{v.sendButton})
+
 	v.setActions(actions{
 		left:  []actionButton{existingActionButton{v.uploadButton}},
-		right: []actionButton{existingActionButton{v.emojiButton}, existingActionButton{v.sendButton}},
+		right: rightButtons,
 	})
 }
 

@@ -132,6 +132,12 @@ func Wrap(state *state.State) *State {
 	}
 }
 
+// Token returns the Discord auth token used by this session.
+// mod: stickerpicker — needed for raw API calls that arikawa doesn't support.
+func (s *State) Token() string {
+	return s.Client.Token
+}
+
 var rawEventsOnce sync.Once
 
 func dumpRawEvents(state *state.State, dir string) {

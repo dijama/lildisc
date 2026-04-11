@@ -107,20 +107,22 @@ var stickerCSS = cssutil.Applier("message-sticker", `
 func newSticker(ctx context.Context, sticker *discord.StickerItem) gtk.Widgetter {
 	switch sticker.FormatType {
 	case discord.StickerFormatAPNG, discord.StickerFormatPNG:
-		url := sticker.StickerURLWithType(discord.PNGImage)
+		// mod: sticker rendering — media proxy WebP loads reliably.
+		// Animated stickers display as static for now (CDN APNG has
+		// loading issues and media proxy strips animation from WebP).
+		url := fmt.Sprintf("https://media.discordapp.net/stickers/%s.webp?size=128",
+			sticker.ID)
+		origURL := sticker.StickerURLWithType(discord.PNGImage)
 
-		// TODO: this is always round because we're using a GtkFrame. What the
-		// heck? How does this shit even work?!
 		image := embed.New(ctx, gtkcord.StickerSize, gtkcord.StickerSize, defaultEmbedOpts)
 		image.SetName(sticker.Name)
 		image.SetHAlign(gtk.AlignStart)
 		image.SetSizeRequest(gtkcord.StickerSize, gtkcord.StickerSize)
 		image.SetFromURL(url)
-		image.SetOpenURL(func() { app.OpenURI(ctx, url) }) // TODO: Add sticker info popover
+		image.SetOpenURL(func() { app.OpenURI(ctx, origURL) })
 		stickerCSS(image)
 		return image
 	default:
-		// Fuck Lottie, whatever the fuck that is.
 		msg := gtk.NewLabel(fmt.Sprintf("[Lottie sticker: %s]", sticker.Name))
 		msg.SetXAlign(0)
 		systemContentCSS(msg)
@@ -607,7 +609,10 @@ func newNormalEmbed(ctx context.Context, msg *discord.Message, msgEmbed *discord
 			opts.Type = embed.EmbedTypeVideo
 			opts.Autoplay = mods.AutoPlayVideos.Value() // mod: embeds
 		case discord.GIFVEmbed:
-			opts.Autoplay = mods.AutoAnimateGIFs.Value() // mod: embeds
+			// GIFV embeds are short looped videos — always auto-play them.
+			// The chatkit embed downloads the .mp4 and plays via MediaFile,
+			// which only triggers when Autoplay is true.
+			opts.Autoplay = true
 			opts.Type = embed.EmbedTypeGIFV
 		}
 
@@ -628,8 +633,18 @@ func newNormalEmbed(ctx context.Context, msg *discord.Message, msgEmbed *discord
 			image.SetSizeRequest(int(thumb.Width), int(thumb.Height))
 		}
 
-		// mod: lazyload — defer thumbnail fetch until scrolled into view
-		if gifOverrideURL != "" {
+		// mod: embeds — for GIFV embeds, load the video URL directly instead
+		// of the thumbnail. Chatkit's SetFromURL re-classifies by URL extension,
+		// so passing a .jpg thumbnail makes it render as a static image even
+		// when opts.Type is GIFV. Passing the .mp4 URL triggers the video
+		// download + autoplay path in chatkit.
+		if opts.Type == embed.EmbedTypeGIFV && msgEmbed.Video != nil {
+			videoURL := string(msgEmbed.Video.Proxy)
+			if videoURL == "" {
+				videoURL = string(msgEmbed.Video.URL)
+			}
+			mods.LazyLoad(image, func() { image.SetFromURL(videoURL) })
+		} else if gifOverrideURL != "" {
 			url := gifOverrideURL
 			mods.LazyLoad(image, func() { image.SetFromURL(url) })
 		} else if msgEmbed.Image == nil && msgEmbed.Video == nil {
@@ -730,10 +745,13 @@ func newNormalEmbed(ctx context.Context, msg *discord.Message, msgEmbed *discord
 				}
 			})
 		default:
-			// mod: embeds — prefer direct URL for viewer too (proxy can be broken)
-			viewURL := string(msgEmbed.Thumbnail.URL)
-			if viewURL == "" {
-				viewURL = string(msgEmbed.Thumbnail.Proxy)
+			// mod: embeds — prefer proxy URL for viewer. The inline thumbnail
+			// loads via proxy successfully, but direct URLs from sites like
+			// Wikipedia reject plain HTTP fetches (no User-Agent/Referer).
+			// Only fall back to direct if proxy is empty or broken.
+			viewURL := string(msgEmbed.Thumbnail.Proxy)
+			if viewURL == "" || mods.IsBrokenProxy(viewURL) {
+				viewURL = string(msgEmbed.Thumbnail.URL)
 			}
 			image.SetOpenURL(func() {
 				openViewer(ctx, viewURL, opts, int(thumb.Width), int(thumb.Height))

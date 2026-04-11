@@ -126,7 +126,7 @@ func NewSidebar(ctx context.Context) *Sidebar {
 	rightWrap.SetContent(s.Right)
 
 	s.Box = gtk.NewBox(gtk.OrientationHorizontal, 0)
-	s.Box.SetHExpand(false)
+	s.Box.SetHExpand(true) // fill the Paned's allocated width so names expand
 	s.Box.Append(s.Left)
 	s.Box.Append(rightWrap)
 	sidebarCSS(s)

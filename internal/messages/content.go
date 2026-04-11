@@ -55,6 +55,11 @@ var contentCSS = cssutil.Applier("message-content-box", `
 	.message-header-blockquote {
 		margin-bottom: 0;
 	}
+	/* Blockquotes inside messages: chatkit's :not(:last-child) adds 3px
+	   bottom margin between consecutive > lines — halve it for tighter feel. */
+	.message-content-box .md-blockquote:not(:last-child) {
+		margin-bottom: 1px;
+	}
 	.message-header-blockquote > *,
 	.message-header-blockquote .mauthor-chip,
 	.message-reply-content link {

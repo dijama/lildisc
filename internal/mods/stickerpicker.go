@@ -1,0 +1,430 @@
+package mods
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"html"
+	"io"
+	"log/slog"
+	"net/http"
+	"strings"
+	"sync"
+
+	"github.com/diamondburned/arikawa/v3/discord"
+	"github.com/diamondburned/gotk4/pkg/glib/v2"
+	"github.com/diamondburned/gotk4/pkg/gtk/v4"
+	"github.com/diamondburned/gotkit/app/prefs"
+	"github.com/diamondburned/gotkit/components/onlineimage"
+	"github.com/diamondburned/gotkit/gtkutil/cssutil"
+	"github.com/diamondburned/gotkit/gtkutil/imgutil"
+	"github.com/dijama/lildisc/internal/gtkcord"
+)
+
+var enableStickerPicker = prefs.NewBool(true, prefs.PropMeta{
+	Name:        "Sticker Picker",
+	Section:     "Mods",
+	Description: "Picker showing all available guild stickers, organized by server.",
+})
+
+var stickerPickerCSS = cssutil.Applier("mod-sticker-picker", `
+	.mod-sticker-picker {
+		min-width: 380px;
+		min-height: 420px;
+	}
+	.mod-sticker-search {
+		margin: 8px;
+	}
+	.mod-sticker-grid {
+		padding: 4px;
+	}
+	.mod-sticker-item {
+		padding: 4px;
+		border-radius: 6px;
+	}
+	.mod-sticker-item:hover {
+		background: alpha(@theme_selected_bg_color, 0.15);
+	}
+	.mod-sticker-item .onlineimage {
+		background: transparent;
+	}
+	.mod-sticker-guild-header {
+		font-weight: bold;
+		font-size: 0.8em;
+		opacity: 0.7;
+		padding: 8px 8px 4px 8px;
+	}
+`)
+
+const stickerPickerSize = 72
+
+// StickerPickResult contains the result of a sticker selection.
+type StickerPickResult struct {
+	StickerID discord.StickerID
+	Name      string
+}
+
+// guildSticker represents a sticker fetched from the Discord REST API.
+type guildSticker struct {
+	ID         discord.StickerID `json:"id"`
+	Name       string            `json:"name"`
+	Tags       string            `json:"tags"`
+	FormatType int               `json:"format_type"` // 1=PNG, 2=APNG, 3=Lottie
+}
+
+// staticURL returns a media proxy URL for reliable static thumbnail loading.
+func (s guildSticker) staticURL() string {
+	return fmt.Sprintf("https://media.discordapp.net/stickers/%s.webp?size=128", s.ID)
+}
+
+// animatedURL returns the CDN URL which serves the actual APNG for animation.
+func (s guildSticker) animatedURL() string {
+	return fmt.Sprintf("https://cdn.discordapp.com/stickers/%s.png", s.ID)
+}
+
+func (s guildSticker) matchesQuery(query string) bool {
+	if strings.Contains(strings.ToLower(s.Name), query) {
+		return true
+	}
+	for _, tag := range strings.Split(s.Tags, ",") {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(tag)), query) {
+			return true
+		}
+	}
+	return false
+}
+
+// stickerCache caches guild stickers to avoid repeated API calls.
+var (
+	stickerCacheMu sync.Mutex
+	stickerCache   = make(map[discord.GuildID][]guildSticker)
+)
+
+// fetchGuildStickers fetches stickers for a guild via the Discord REST API.
+// arikawa v3 doesn't have a sticker API, so we make the request directly.
+func fetchGuildStickers(token string, guildID discord.GuildID) ([]guildSticker, error) {
+	stickerCacheMu.Lock()
+	if cached, ok := stickerCache[guildID]; ok {
+		stickerCacheMu.Unlock()
+		return cached, nil
+	}
+	stickerCacheMu.Unlock()
+
+	url := fmt.Sprintf("https://discord.com/api/v10/guilds/%s/stickers", guildID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("discord API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var stickers []guildSticker
+	if err := json.NewDecoder(resp.Body).Decode(&stickers); err != nil {
+		return nil, err
+	}
+
+	stickerCacheMu.Lock()
+	stickerCache[guildID] = stickers
+	stickerCacheMu.Unlock()
+
+	return stickers, nil
+}
+
+// InvalidateStickerCache clears cached stickers for a guild.
+func InvalidateStickerCache(guildID discord.GuildID) {
+	stickerCacheMu.Lock()
+	delete(stickerCache, guildID)
+	stickerCacheMu.Unlock()
+}
+
+// SendSticker sends a message containing only a sticker to the given channel.
+// arikawa v3's SendMessageData doesn't support sticker_ids, so we make a raw
+// POST to the Discord API.
+func SendSticker(token string, channelID discord.ChannelID, stickerID discord.StickerID, ref *discord.MessageReference) error {
+	type stickerMessage struct {
+		StickerIDs []discord.StickerID      `json:"sticker_ids"`
+		Reference  *discord.MessageReference `json:"message_reference,omitempty"`
+	}
+
+	body, err := json.Marshal(stickerMessage{
+		StickerIDs: []discord.StickerID{stickerID},
+		Reference:  ref,
+	})
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", channelID)
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("discord API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
+// defaultStickerPack is a standard Discord sticker pack from /sticker-packs.
+type defaultStickerPack struct {
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Stickers []guildSticker  `json:"stickers"`
+}
+
+type stickerPacksResponse struct {
+	Packs []defaultStickerPack `json:"sticker_packs"`
+}
+
+var (
+	defaultPacksMu    sync.Mutex
+	defaultPacksCache []defaultStickerPack
+)
+
+func fetchDefaultStickerPacks(token string) []defaultStickerPack {
+	defaultPacksMu.Lock()
+	if defaultPacksCache != nil {
+		defer defaultPacksMu.Unlock()
+		return defaultPacksCache
+	}
+	defaultPacksMu.Unlock()
+
+	req, err := http.NewRequest("GET", "https://discord.com/api/v10/sticker-packs", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil
+	}
+
+	var data stickerPacksResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil
+	}
+
+	defaultPacksMu.Lock()
+	defaultPacksCache = data.Packs
+	defaultPacksMu.Unlock()
+
+	return data.Packs
+}
+
+// NewStickerPickerPopover creates a sticker picker popover for the composer.
+// guildID is the current guild context — non-Nitro users only see that guild's stickers.
+func NewStickerPickerPopover(ctx context.Context, guildID discord.GuildID, onPick func(StickerPickResult)) *gtk.Popover {
+	if !enableStickerPicker.Value() {
+		return nil
+	}
+
+	state := gtkcord.FromContext(ctx)
+	if state == nil {
+		return nil
+	}
+
+	search := gtk.NewSearchEntry()
+	search.AddCSSClass("mod-sticker-search")
+	search.SetPlaceholderText("Search stickers...")
+
+	stickerBox := gtk.NewBox(gtk.OrientationVertical, 0)
+	stickerBox.AddCSSClass("mod-sticker-grid")
+
+	scroll := gtk.NewScrolledWindow()
+	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
+	scroll.SetChild(stickerBox)
+	scroll.SetVExpand(true)
+
+	content := gtk.NewBox(gtk.OrientationVertical, 0)
+	content.Append(search)
+	content.Append(scroll)
+	stickerPickerCSS(content)
+
+	popover := gtk.NewPopover()
+	popover.AddCSSClass("mod-sticker-picker")
+	popover.SetChild(content)
+	popover.SetSizeRequest(380, 420)
+
+	addStickerFlow := func(stickers []guildSticker) *gtk.FlowBox {
+		flow := gtk.NewFlowBox()
+		flow.SetSelectionMode(gtk.SelectionNone)
+		flow.SetMaxChildrenPerLine(4)
+		flow.SetMinChildrenPerLine(3)
+		flow.SetHomogeneous(true)
+
+		for _, s := range stickers {
+			s := s
+			// Skip Lottie stickers — no renderer available.
+			if s.FormatType == 3 {
+				continue
+			}
+
+			img := onlineimage.NewPicture(ctx, imgutil.HTTPProvider)
+			img.SetSizeRequest(stickerPickerSize, stickerPickerSize)
+			img.SetKeepAspectRatio(true)
+			img.SetURL(s.staticURL())
+
+			tooltip := html.EscapeString(s.Name)
+			if s.Tags != "" {
+				tooltip += "\n" + fmt.Sprintf(
+					`<span size="smaller" fgalpha="75%%">%s</span>`,
+					html.EscapeString(s.Tags),
+				)
+			}
+
+			box := gtk.NewBox(gtk.OrientationVertical, 0)
+			box.AddCSSClass("mod-sticker-item")
+			box.Append(img)
+			box.SetTooltipMarkup(tooltip)
+
+			click := gtk.NewGestureClick()
+			click.ConnectReleased(func(n int, x, y float64) {
+				onPick(StickerPickResult{
+					StickerID: s.ID,
+					Name:      s.Name,
+				})
+				popover.Popdown()
+			})
+			box.AddController(click)
+			flow.Append(box)
+		}
+		return flow
+	}
+
+	populate := func(query string) {
+		clearBox(stickerBox)
+		query = strings.ToLower(query)
+
+		hasNitro := state.EmojiState.HasNitro()
+		token := state.Token()
+
+		// Determine which guilds to show stickers for.
+		var guildIDs []discord.GuildID
+		if hasNitro {
+			// Nitro: show all guilds.
+			guilds, err := state.Cabinet.Guilds()
+			if err == nil {
+				for _, g := range guilds {
+					guildIDs = append(guildIDs, g.ID)
+				}
+			}
+		} else if guildID.IsValid() {
+			// Non-Nitro: only current guild's stickers.
+			guildIDs = []discord.GuildID{guildID}
+		}
+
+		loading := gtk.NewLabel("Loading stickers...")
+		loading.AddCSSClass("mod-sticker-guild-header")
+		stickerBox.Append(loading)
+
+		go func() {
+			type stickerSection struct {
+				name     string
+				stickers []guildSticker
+			}
+
+			var sections []stickerSection
+
+			// Guild stickers.
+			guilds, _ := state.Cabinet.Guilds()
+			guildNames := make(map[discord.GuildID]string, len(guilds))
+			for _, g := range guilds {
+				guildNames[g.ID] = g.Name
+			}
+
+			for _, gID := range guildIDs {
+				stickers, err := fetchGuildStickers(token, gID)
+				if err != nil {
+					slog.Debug("failed to fetch stickers",
+						"guild", gID, "err", err)
+					continue
+				}
+				if query != "" {
+					stickers = filterStickers(stickers, query)
+				}
+				if len(stickers) == 0 {
+					continue
+				}
+				name := guildNames[gID]
+				if name == "" {
+					name = gID.String()
+				}
+				sections = append(sections, stickerSection{name: name, stickers: stickers})
+			}
+
+			// Default sticker packs (always available).
+			packs := fetchDefaultStickerPacks(token)
+			for _, pack := range packs {
+				stickers := pack.Stickers
+				if query != "" {
+					stickers = filterStickers(stickers, query)
+				}
+				if len(stickers) == 0 {
+					continue
+				}
+				sections = append(sections, stickerSection{name: pack.Name, stickers: stickers})
+			}
+
+			glib.IdleAdd(func() {
+				clearBox(stickerBox)
+
+				if len(sections) == 0 {
+					label := gtk.NewLabel("No stickers found")
+					label.AddCSSClass("mod-sticker-guild-header")
+					stickerBox.Append(label)
+					return
+				}
+
+				for _, sec := range sections {
+					header := gtk.NewLabel(sec.name)
+					header.AddCSSClass("mod-sticker-guild-header")
+					header.SetXAlign(0)
+					stickerBox.Append(header)
+					stickerBox.Append(addStickerFlow(sec.stickers))
+				}
+			})
+		}()
+	}
+
+	search.ConnectSearchChanged(func() { populate(search.Text()) })
+	popover.ConnectShow(func() { populate(search.Text()) })
+
+	return popover
+}
+
+func filterStickers(stickers []guildSticker, query string) []guildSticker {
+	var out []guildSticker
+	for _, s := range stickers {
+		if s.matchesQuery(query) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
