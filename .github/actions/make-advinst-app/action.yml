@@ -31,7 +31,6 @@ runs:
   steps:
     - uses: caphyon/advinst-github-action@v2.0.2
       with:
-        advinst-version: 21.5.1
         advinst-enable-automation: true
 
     - run: |
