@@ -93,6 +93,22 @@ type tenorResponse struct {
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
+// maxJSONResponseSize bounds API JSON payloads (Tenor, Discord) so a hostile
+// or runaway endpoint can't OOM the client. 4 MiB is ~30x larger than any
+// legitimate response we've seen.
+const maxJSONResponseSize = 4 << 20
+
+func decodeJSONResponse(resp *http.Response, dest interface{}) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJSONResponseSize+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > maxJSONResponseSize {
+		return fmt.Errorf("response exceeds %d byte limit", maxJSONResponseSize)
+	}
+	return json.Unmarshal(body, dest)
+}
+
 func tenorSearch(query string, limit int) ([]tenorResult, error) {
 	endpoint := tenorBaseURL + "/search"
 	params := url.Values{
@@ -109,13 +125,8 @@ func tenorSearch(query string, limit int) ([]tenorResult, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
 	var data tenorResponse
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := decodeJSONResponse(resp, &data); err != nil {
 		return nil, err
 	}
 
@@ -137,13 +148,8 @@ func tenorTrending(limit int) ([]tenorResult, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
 	var data tenorResponse
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := decodeJSONResponse(resp, &data); err != nil {
 		return nil, err
 	}
 

@@ -78,7 +78,9 @@ func FetchAndSaveAvatar(token, userID, avatarHash string) {
 			return
 		}
 
-		_, copyErr := io.Copy(f, resp.Body)
+		// Cap at 8MB. Discord avatars are at most ~256KB; anything larger is
+		// either a misbehaving CDN response or hostile input we shouldn't write.
+		_, copyErr := io.Copy(f, io.LimitReader(resp.Body, 8<<20))
 		resp.Body.Close()
 		f.Close()
 

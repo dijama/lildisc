@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -19,10 +20,29 @@ func apiCacheDir() string {
 	return d
 }
 
+// safeCacheFilename rejects anything that could escape apiCacheDir. Callers
+// today only pass typed-int formatted names, but this guards against future
+// callers passing untrusted strings.
+func safeCacheFilename(filename string) bool {
+	if filename == "" || filename == "." || filename == ".." {
+		return false
+	}
+	if strings.ContainsAny(filename, `/\`) {
+		return false
+	}
+	if strings.Contains(filename, "..") {
+		return false
+	}
+	return true
+}
+
 // loadCachedJSON loads a JSON file from the API cache directory.
 // Returns false if the file doesn't exist or is older than maxAge.
 // Pass maxAge <= 0 to accept any age (never expire).
 func loadCachedJSON(filename string, maxAge time.Duration, dest interface{}) bool {
+	if !safeCacheFilename(filename) {
+		return false
+	}
 	dir := apiCacheDir()
 	if dir == "" {
 		return false
@@ -55,6 +75,9 @@ func loadCachedJSON(filename string, maxAge time.Duration, dest interface{}) boo
 
 // saveCachedJSON saves a JSON file to the API cache directory.
 func saveCachedJSON(filename string, data interface{}) {
+	if !safeCacheFilename(filename) {
+		return
+	}
 	dir := apiCacheDir()
 	if dir == "" {
 		return

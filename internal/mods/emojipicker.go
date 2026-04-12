@@ -68,6 +68,12 @@ var emojiPickerCSS = cssutil.Applier("mod-emoji-picker", `
 
 const emojiPickerSize = 48
 
+// maxEmojiInitialRender caps how many custom emoji are realised on an empty
+// query. A user in many servers can have 5000+ emoji; rendering all of them
+// upfront stalls the GTK main thread. The full set is still reachable by
+// typing — search filters cheaply and only renders matches.
+const maxEmojiInitialRender = 200
+
 // EmojiPickResult contains the result of an emoji selection.
 type EmojiPickResult struct {
 	Text     string           // message text to insert
@@ -341,10 +347,19 @@ func NewEmojiPickerPopover(ctx context.Context, guildID discord.GuildID, onPick 
 		// Server emoji
 		guilds, err := state.EmojiState.AllEmojis()
 		if err == nil {
+			rendered := 0
+			truncated := false
 			for _, guild := range guilds {
 				var matched []discord.Emoji
 				if query == "" {
 					matched = guild.Emojis
+					if remaining := maxEmojiInitialRender - rendered; remaining <= 0 {
+						truncated = true
+						break
+					} else if len(matched) > remaining {
+						matched = matched[:remaining]
+						truncated = true
+					}
 				} else {
 					matched = filterEmojis(guild.Emojis, query)
 				}
@@ -369,6 +384,10 @@ func NewEmojiPickerPopover(ctx context.Context, guildID discord.GuildID, onPick 
 					}, popover))
 				}
 				emojiBox.Append(flow)
+				rendered += len(matched)
+			}
+			if truncated {
+				appendTruncationHint(emojiBox)
 			}
 		}
 
@@ -388,6 +407,15 @@ func NewEmojiPickerPopover(ctx context.Context, guildID discord.GuildID, onPick 
 	popover.ConnectShow(func() { populate(search.Text()) })
 
 	return popover
+}
+
+// appendTruncationHint adds a muted footer label indicating more results are
+// available via search. Used when the empty-query render is capped.
+func appendTruncationHint(box *gtk.Box) {
+	hint := gtk.NewLabel("Type to search for more emoji")
+	hint.AddCSSClass("mod-emoji-guild-header")
+	hint.SetXAlign(0)
+	box.Append(hint)
 }
 
 // --- Reaction emoji picker ---
@@ -447,6 +475,8 @@ func NewReactionPickerPopover(ctx context.Context, guildID discord.GuildID, onPi
 		// Server emoji (filtered by guild for non-Nitro)
 		guilds, err := state.EmojiState.AllEmojis()
 		if err == nil {
+			rendered := 0
+			truncated := false
 			for _, guild := range guilds {
 				if !hasNitro && guild.ID != guildID {
 					continue
@@ -455,6 +485,13 @@ func NewReactionPickerPopover(ctx context.Context, guildID discord.GuildID, onPi
 				var matched []discord.Emoji
 				if query == "" {
 					matched = guild.Emojis
+					if remaining := maxEmojiInitialRender - rendered; remaining <= 0 {
+						truncated = true
+						break
+					} else if len(matched) > remaining {
+						matched = matched[:remaining]
+						truncated = true
+					}
 				} else {
 					matched = filterEmojis(guild.Emojis, query)
 				}
@@ -476,6 +513,10 @@ func NewReactionPickerPopover(ctx context.Context, guildID discord.GuildID, onPi
 					}, popover))
 				}
 				emojiBox.Append(flow)
+				rendered += len(matched)
+			}
+			if truncated {
+				appendTruncationHint(emojiBox)
 			}
 		}
 

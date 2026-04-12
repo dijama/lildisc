@@ -136,11 +136,11 @@ func fetchGuildStickers(token string, guildID discord.GuildID) ([]guildSticker, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("discord API returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&stickers); err != nil {
+	if err := decodeJSONResponse(resp, &stickers); err != nil {
 		return nil, err
 	}
 
@@ -193,7 +193,7 @@ func SendSticker(token string, channelID discord.ChannelID, stickerID discord.St
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("discord API returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -251,7 +251,7 @@ func fetchDefaultStickerPacks(token string) []defaultStickerPack {
 	}
 
 	var data stickerPacksResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := decodeJSONResponse(resp, &data); err != nil {
 		return nil
 	}
 
@@ -384,24 +384,43 @@ func NewStickerPickerPopover(ctx context.Context, guildID discord.GuildID, onPic
 				guildNames[g.ID] = g.Name
 			}
 
-			for _, gID := range guildIDs {
-				stickers, err := fetchGuildStickers(token, gID)
-				if err != nil {
-					slog.Debug("failed to fetch stickers",
-						"guild", gID, "err", err)
-					continue
+			// Fetch in parallel with bounded concurrency. The disk cache makes
+			// warm fetches instant; the slow path is the first cold open with
+			// many guilds, where 100 sequential RTTs would block the picker
+			// for seconds.
+			perGuild := make([]stickerSection, len(guildIDs))
+			sem := make(chan struct{}, 5)
+			var wg sync.WaitGroup
+			for i, gID := range guildIDs {
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(i int, gID discord.GuildID) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					stickers, err := fetchGuildStickers(token, gID)
+					if err != nil {
+						slog.Debug("failed to fetch stickers",
+							"guild", gID, "err", err)
+						return
+					}
+					if query != "" {
+						stickers = filterStickers(stickers, query)
+					}
+					if len(stickers) == 0 {
+						return
+					}
+					name := guildNames[gID]
+					if name == "" {
+						name = gID.String()
+					}
+					perGuild[i] = stickerSection{name: name, stickers: stickers}
+				}(i, gID)
+			}
+			wg.Wait()
+			for _, sec := range perGuild {
+				if sec.name != "" {
+					sections = append(sections, sec)
 				}
-				if query != "" {
-					stickers = filterStickers(stickers, query)
-				}
-				if len(stickers) == 0 {
-					continue
-				}
-				name := guildNames[gID]
-				if name == "" {
-					name = gID.String()
-				}
-				sections = append(sections, stickerSection{name: name, stickers: stickers})
 			}
 
 			// Default sticker packs (always available).

@@ -3,6 +3,7 @@ package mods
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/diamondburned/arikawa/v3/api"
 	"github.com/diamondburned/arikawa/v3/discord"
@@ -204,69 +205,44 @@ func performSearch(ctx context.Context, state *gtkcord.State, resultBox *gtk.Box
 	}()
 }
 
-func searchCachedMessages(state *gtkcord.State, query string) (api.SearchResponse, error) {
-	// Search through locally cached messages.
-	// This is a simple substring search over the cabinet.
-	offline := state.Offline()
-	var results [][]discord.Message
+const maxSearchResults = 25
 
-	// Get all channels we have cached messages for.
+func searchCachedMessages(state *gtkcord.State, query string) (api.SearchResponse, error) {
+	offline := state.Offline()
+	queryLower := strings.ToLower(query)
+	matches := make([]discord.Message, 0, maxSearchResults)
+
 	guilds, _ := offline.Cabinet.Guilds()
 	for _, guild := range guilds {
 		channels, _ := offline.Cabinet.Channels(guild.ID)
 		for _, ch := range channels {
 			msgs, _ := offline.Cabinet.Messages(ch.ID)
 			for _, msg := range msgs {
-				if containsIgnoreCase(msg.Content, query) {
-					results = append(results, []discord.Message{msg})
-					if len(results) >= 25 {
-						return api.SearchResponse{
-							Messages:     results,
-							TotalResults: uint(len(results)),
-						}, nil
-					}
+				if !strings.Contains(strings.ToLower(msg.Content), queryLower) {
+					continue
+				}
+				matches = append(matches, msg)
+				if len(matches) >= maxSearchResults {
+					return wrapSearchMatches(matches), nil
 				}
 			}
 		}
 	}
 
-	return api.SearchResponse{
-		Messages:     results,
-		TotalResults: uint(len(results)),
-	}, nil
+	return wrapSearchMatches(matches), nil
 }
 
-func containsIgnoreCase(s, substr string) bool {
-	if len(substr) == 0 {
-		return true
+// wrapSearchMatches packages flat matches into the api.SearchResponse shape
+// (one group containing all messages). Discord's real search API groups by
+// context window; for our local cabinet search we only have isolated hits.
+func wrapSearchMatches(matches []discord.Message) api.SearchResponse {
+	if len(matches) == 0 {
+		return api.SearchResponse{}
 	}
-	// Simple case-insensitive contains.
-	sl := len(s)
-	subl := len(substr)
-	if sl < subl {
-		return false
+	return api.SearchResponse{
+		Messages:     [][]discord.Message{matches},
+		TotalResults: uint(len(matches)),
 	}
-	for i := 0; i <= sl-subl; i++ {
-		match := true
-		for j := 0; j < subl; j++ {
-			a := s[i+j]
-			b := substr[j]
-			if a >= 'A' && a <= 'Z' {
-				a += 'a' - 'A'
-			}
-			if b >= 'A' && b <= 'Z' {
-				b += 'a' - 'A'
-			}
-			if a != b {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
 }
 
 func createSearchResult(ctx context.Context, state *gtkcord.State, msg discord.Message, dialog *adw.Dialog) gtk.Widgetter {

@@ -77,6 +77,12 @@ func saveEmbedMedia(ctx context.Context, parent gtk.Widgetter, sourceURL, filena
 	chooser.Show()
 }
 
+// maxEmbedDownloadSize caps the on-disk size of any embed save. Discord
+// attachments cap at 500MB on Nitro, so this matches that ceiling. The cap
+// exists to bound damage from a hostile or malfunctioning CDN claiming a
+// Content-Length it doesn't honor.
+const maxEmbedDownloadSize = 500 << 20 // 500 MiB
+
 func downloadFile(url, outPath string) error {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -92,10 +98,21 @@ func downloadFile(url, outPath string) error {
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer out.Close()
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		return fmt.Errorf("write file: %w", err)
+	limited := &io.LimitedReader{R: resp.Body, N: maxEmbedDownloadSize + 1}
+	_, copyErr := io.Copy(out, limited)
+	closeErr := out.Close()
+	if copyErr != nil {
+		os.Remove(outPath)
+		return fmt.Errorf("write file: %w", copyErr)
+	}
+	if closeErr != nil {
+		os.Remove(outPath)
+		return fmt.Errorf("close file: %w", closeErr)
+	}
+	if limited.N <= 0 {
+		os.Remove(outPath)
+		return fmt.Errorf("download exceeds %d byte limit", maxEmbedDownloadSize)
 	}
 
 	return nil

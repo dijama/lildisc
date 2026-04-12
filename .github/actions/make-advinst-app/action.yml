@@ -46,6 +46,19 @@ runs:
           $app_version = $app_version.Substring(1)
         }
 
+        # Convert the build to MSI-only (no EXE bootstrapper). The project was
+        # originally configured with FilesInsideExe=true, which makes Advanced
+        # Installer wrap the MSI in a setup.exe bootstrapper at build time.
+        # With newer AI versions (23.x) + v2.0.x of the action, that path fails:
+        #   "Current context does not have a registered service of this type
+        #    [caphyon.advinst.msicomp.IPreReq]"
+        # LilDisc has no prerequisites (the Go/GTK4 binary ships its own DLLs),
+        # so a plain MSI is sufficient. MsiOutside = standalone MSI, no EXE.
+        & AdvancedInstaller.com /edit "$aip_path" /SetOutputType MsiOutside -buildname DefaultBuild
+        if ($LASTEXITCODE -ne 0) {
+          throw "SetOutputType MsiOutside failed with exit code $LASTEXITCODE"
+        }
+
         $advinst = new-object -com advancedinstaller
 
         $project = $advinst.LoadProject($aip_path)

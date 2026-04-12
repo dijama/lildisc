@@ -61,18 +61,19 @@ func initTray(ctx context.Context, win ActionWidget) {
 
 	// Start the SNI tray icon.
 	go func() {
-		if err := startSNI(win); err != nil {
+		if err := startSNI(ctx, win); err != nil {
 			slog.Warn("failed to start system tray icon", "err", err)
 			slog.Info("close-to-tray will still hide the window, but no tray icon will appear")
 		}
 	}()
 }
 
-func startSNI(win gtk.Widgetter) error {
+func startSNI(ctx context.Context, win gtk.Widgetter) error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return fmt.Errorf("connect to session bus: %w", err)
 	}
+	defer conn.Close()
 
 	item := &trayItem{conn: conn, win: win}
 	menu := &trayMenu{item: item}
@@ -88,6 +89,10 @@ func startSNI(win gtk.Widgetter) error {
 			Name: sniItemIface,
 			Methods: []introspect.Method{
 				{Name: "Activate", Args: []introspect.Arg{
+					{Name: "x", Type: "i", Direction: "in"},
+					{Name: "y", Type: "i", Direction: "in"},
+				}},
+				{Name: "SecondaryActivate", Args: []introspect.Arg{
 					{Name: "x", Type: "i", Direction: "in"},
 					{Name: "y", Type: "i", Direction: "in"},
 				}},
@@ -159,7 +164,12 @@ func startSNI(win gtk.Widgetter) error {
 	}
 
 	slog.Info("system tray icon registered")
-	select {} // block forever
+
+	// Emit LayoutUpdated so tray hosts know the menu has content.
+	conn.Emit(menuDBusPath, menuIface+".LayoutUpdated", uint32(1), int32(0))
+
+	<-ctx.Done()
+	return nil
 }
 
 // --- SNI Item methods ---
@@ -176,6 +186,12 @@ func (t *trayItem) Activate(x, y int32) *dbus.Error {
 		}
 	})
 	return nil
+}
+
+// SecondaryActivate is called by tray hosts on right-click when no dbusmenu
+// is available. Shows the window and presents a quit dialog.
+func (t *trayItem) SecondaryActivate(x, y int32) *dbus.Error {
+	return t.ContextMenu(x, y)
 }
 
 func (t *trayItem) ContextMenu(x, y int32) *dbus.Error {
@@ -244,7 +260,7 @@ func sniProperties() map[string]dbus.Variant {
 		"IconThemePath": dbus.MakeVariant(""),
 		"ItemIsMenu":    dbus.MakeVariant(false),
 		"WindowId":      dbus.MakeVariant(int32(0)),
-		"Menu":          dbus.MakeVariant(dbus.ObjectPath(menuDBusPath)),
+		"Menu":          dbus.MakeVariant(dbus.ObjectPath("/NO_DBUSMENU")),
 		"IconPixmap": dbus.MakeVariant([]struct {
 			W, H int32
 			Data []byte
@@ -266,54 +282,45 @@ type trayMenu struct {
 	revision uint32
 }
 
+// menuLayout is the D-Bus (ia{sv}av) struct for dbusmenu items.
+type menuLayout struct {
+	ID         int32                    `dbus:"struct"`
+	Properties map[string]dbus.Variant  `dbus:"struct"`
+	Children   []dbus.Variant           `dbus:"struct"`
+}
+
 // GetLayout implements com.canonical.dbusmenu.
-func (m *trayMenu) GetLayout(parentID int32, recursionDepth int32, propertyNames []string) (uint32, struct {
-	V0 int32
-	V1 map[string]dbus.Variant
-	V2 []dbus.Variant
-}, *dbus.Error) {
-	// Build the layout using the exact D-Bus signature Waybar expects.
-	// Each item is (ia{sv}av) — id, properties dict, children variants.
-	sig := dbus.SignatureOf(struct {
-		V0 int32
-		V1 map[string]dbus.Variant
-		V2 []dbus.Variant
-	}{})
-
-	showProps := map[string]dbus.Variant{
-		"label":       dbus.MakeVariant("Show/Hide"),
-		"enabled":     dbus.MakeVariant(true),
-		"visible":     dbus.MakeVariant(true),
-		"toggle-type": dbus.MakeVariant(""),
+func (m *trayMenu) GetLayout(parentID int32, recursionDepth int32, propertyNames []string) (uint32, menuLayout, *dbus.Error) {
+	slog.Debug("GetLayout called", "parentID", parentID, "depth", recursionDepth)
+	show := menuLayout{
+		ID: menuIDShow,
+		Properties: map[string]dbus.Variant{
+			"label":   dbus.MakeVariant("Show/Hide"),
+			"enabled": dbus.MakeVariant(true),
+			"visible": dbus.MakeVariant(true),
+		},
+		Children: []dbus.Variant{},
 	}
-	show := dbus.MakeVariantWithSignature(struct {
-		V0 int32
-		V1 map[string]dbus.Variant
-		V2 []dbus.Variant
-	}{menuIDShow, showProps, nil}, sig)
 
-	quitProps := map[string]dbus.Variant{
-		"label":       dbus.MakeVariant("Quit"),
-		"enabled":     dbus.MakeVariant(true),
-		"visible":     dbus.MakeVariant(true),
-		"toggle-type": dbus.MakeVariant(""),
+	quit := menuLayout{
+		ID: menuIDQuit,
+		Properties: map[string]dbus.Variant{
+			"label":   dbus.MakeVariant("Quit"),
+			"enabled": dbus.MakeVariant(true),
+			"visible": dbus.MakeVariant(true),
+		},
+		Children: []dbus.Variant{},
 	}
-	quit := dbus.MakeVariantWithSignature(struct {
-		V0 int32
-		V1 map[string]dbus.Variant
-		V2 []dbus.Variant
-	}{menuIDQuit, quitProps, nil}, sig)
 
-	root := struct {
-		V0 int32
-		V1 map[string]dbus.Variant
-		V2 []dbus.Variant
-	}{
-		V0: menuIDRoot,
-		V1: map[string]dbus.Variant{
+	root := menuLayout{
+		ID: menuIDRoot,
+		Properties: map[string]dbus.Variant{
 			"children-display": dbus.MakeVariant("submenu"),
 		},
-		V2: []dbus.Variant{show, quit},
+		Children: []dbus.Variant{
+			dbus.MakeVariant(show),
+			dbus.MakeVariant(quit),
+		},
 	}
 
 	return m.revision, root, nil
@@ -363,7 +370,7 @@ func (m *trayMenu) EventGroup(events []struct {
 
 // AboutToShow implements com.canonical.dbusmenu.
 func (m *trayMenu) AboutToShow(id int32) (bool, *dbus.Error) {
-	return false, nil
+	return true, nil
 }
 
 // AboutToShowGroup implements com.canonical.dbusmenu.
