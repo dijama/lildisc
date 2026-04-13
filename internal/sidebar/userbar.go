@@ -3,12 +3,10 @@ package sidebar
 import (
 	"context"
 	"log/slog"
-	"regexp"
 	"strconv"
 
 	"github.com/diamondburned/arikawa/v3/discord"
 	"github.com/diamondburned/arikawa/v3/gateway"
-	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
 	"github.com/diamondburned/gotkit/components/onlineimage"
@@ -28,6 +26,13 @@ type userBar struct {
 	menu          *gtk.ToggleButton
 
 	ctx context.Context
+
+	// mod: avatar — when the user's avatar URL 404s (Discord-side data
+	// integrity bug, account migration, broken upload, etc.) we install
+	// the user's default Discord avatar as a fallback so they don't sit
+	// staring at initials. Tracks which fallback URL we last installed
+	// so we don't loop if the default also fails. Reset on manual refresh.
+	fallbackURL string
 }
 
 var userBarCSS = cssutil.Applier("user-bar", `
@@ -40,8 +45,39 @@ var userBarCSS = cssutil.Applier("user-bar", `
 `)
 
 func newUserBar(ctx context.Context, menuActions []gtkutil.PopoverMenuItem) *userBar {
-	b := userBar{ctx: ctx}
-	b.avatar = onlineimage.NewAvatar(ctx, imgutil.HTTPProvider, gtkcord.UserBarAvatarSize)
+	b := &userBar{ctx: ctx}
+
+	// mod: avatar — install an error callback on the context the avatar
+	// widget will use for HTTP fetches. When Discord's CDN 404s the
+	// user's avatar (their hash points at a missing CDN object — happens
+	// with broken uploads, mid-migration accounts, deleted avatars whose
+	// hash is still in the cabinet, etc.), the official Discord client
+	// quietly substitutes the user's default avatar. Mirror that here so
+	// the user-bar shows _something_ instead of initials forever.
+	avatarCtx := imgutil.WithOpts(ctx, imgutil.WithErrorFn(func(err error) {
+		client := gtkcord.FromContext(ctx)
+		me, _ := client.Me()
+		if me == nil {
+			slog.Warn("userBar: avatar fetch failed but no me to compute fallback", "err", err)
+			return
+		}
+		// Construct the default avatar URL by calling AvatarURL on a User
+		// stripped of the (broken) hash. arikawa returns the embed-avatar
+		// URL when Avatar is empty, which is exactly the fallback path
+		// every Discord client uses.
+		defaultUser := discord.User{ID: me.ID, Discriminator: me.Discriminator}
+		defaultURL := defaultUser.AvatarURL()
+		if defaultURL == "" || b.fallbackURL == defaultURL {
+			slog.Warn("userBar: avatar fetch failed and fallback unavailable / already failed",
+				"err", err, "current_fallback", b.fallbackURL)
+			return
+		}
+		b.fallbackURL = defaultURL
+		slog.Warn("userBar: avatar URL failed, falling back to default Discord avatar",
+			"err", err, "fallback_url", defaultURL)
+		b.avatar.SetFromURL(defaultURL)
+	}))
+	b.avatar = onlineimage.NewAvatar(avatarCtx, imgutil.HTTPProvider, gtkcord.UserBarAvatarSize)
 	b.avatar.AddCSSClass("user-bar-avatar")
 
 	// mod: presence — overlay status dot on avatar, same as DM channel avatars
@@ -86,10 +122,17 @@ func newUserBar(ctx context.Context, menuActions []gtkutil.PopoverMenuItem) *use
 	anim := b.avatar.EnableAnimation()
 	anim.ConnectMotion(b)
 
-	vis := gtkutil.WithVisibility(ctx, b)
-
+	// mod: avatar — use BindWidget rather than BindHandler here. BindHandler
+	// wraps the context in a visibility-gated canceller which starts in the
+	// cancelled state until the widget maps, and only OnRenew()s the handler
+	// registration once the widget is visible. By that time the ReadyEvent
+	// has already been dispatched and we silently miss it — which is why
+	// the user's own avatar never triggered a fetch in the previous version.
+	// BindWidget registers the handler immediately and ties its lifetime to
+	// the widget directly, so Ready arrives even if it fires before we're
+	// mapped.
 	client := gtkcord.FromContext(ctx)
-	client.BindHandler(vis,
+	client.BindWidget(b,
 		func(ev gateway.Event) {
 			switch ev := ev.(type) {
 			case *gateway.UserUpdateEvent:
@@ -116,38 +159,29 @@ func newUserBar(ctx context.Context, menuActions []gtkutil.PopoverMenuItem) *use
 		}
 	}
 
-	// mod: avatar — fetch and save avatar to local file if not cached.
-	// Bypasses gotkit's image cache entirely to avoid stale/404 issues.
-	if mods.LocalAvatarPath() == "" && me != nil && me.Avatar != "" {
-		token := client.Token()
-		meID := me.ID.String()
-		meAvatar := me.Avatar
-		go func() {
-			mods.FetchAndSaveAvatar(token, meID, meAvatar)
-			glib.IdleAdd(func() { b.updateUser(me) })
-		}()
-	} else if me != nil && me.Avatar == "" {
-		go func() {
-			apiMe := client.FetchMeFromAPI()
-			if apiMe != nil && apiMe.Avatar != "" {
-				token := client.Token()
-				mods.FetchAndSaveAvatar(token, apiMe.ID.String(), apiMe.Avatar)
-				glib.IdleAdd(func() { b.updateUser(apiMe) })
-			}
-		}()
-	}
+	// mod: avatar — listen for manual refresh requests
+	// (win.refresh-avatar from the user menu). Bust the gotkit HTTP
+	// cache entry for the current avatar URL, reset the fallback flag
+	// so we'll try the primary URL again, Disable() the widget so its
+	// same-URL dedup doesn't skip the reload, then re-set the URL.
+	mods.AvatarRefreshSignaler.Connect(func() {
+		curr, _ := client.Me()
+		if curr == nil {
+			return
+		}
+		url := gtkcord.InjectAvatarSize(curr.AvatarURL())
+		if url != "" {
+			mods.BustImageCache(url)
+		}
+		b.fallbackURL = ""
+		b.avatar.Disable()
+		b.updateUser(curr)
+	})
 
-	return &b
+	return b
 }
 
-var discriminatorRe = regexp.MustCompile(`#\d{1,4}$`)
-
 func (b *userBar) updateUser(me *discord.User) {
-	slog.Info("userBar.updateUser",
-		"id", me.ID,
-		"username", me.Username,
-		"avatar", me.Avatar,
-		"url", gtkcord.InjectAvatarSize(me.AvatarURL()))
 	tag := me.Username
 	if v, _ := strconv.Atoi(me.Discriminator); v != 0 {
 		tag += `<span size="smaller">` + "#" + me.Discriminator + "</span>"
@@ -166,10 +200,8 @@ func (b *userBar) updateUser(me *discord.User) {
 	}
 
 	b.avatar.SetText(displayName)
-	// mod: avatar — load from local cached file, bypassing gotkit's
-	// image cache entirely. See ensureLocalAvatar().
-	if path := mods.LocalAvatarPath(); path != "" {
-		b.avatar.SetFromURL("file://" + path)
+	if url := gtkcord.InjectAvatarSize(me.AvatarURL()); url != "" {
+		b.avatar.SetFromURL(url)
 	}
 	b.name.SetMarkup(name)
 	b.name.SetTooltipMarkup(name)

@@ -14,6 +14,7 @@ import (
 	"github.com/diamondburned/gotkit/gtkutil/cssutil"
 	"github.com/diamondburned/ningen/v3/states/read"
 	"github.com/dijama/lildisc/internal/gtkcord"
+	"github.com/dijama/lildisc/internal/mods"
 )
 
 // ChannelView displays a list of direct messaging channels.
@@ -25,6 +26,10 @@ type ChannelView struct {
 	scroll  *gtk.ScrolledWindow
 	list    *gtk.ListBox
 	spinner *gtk.Spinner
+
+	// mod: friendlist — collapsible "Friends (N)" section appended under
+	// the active DM list. nil if the feature is disabled in preferences.
+	friendsExpander *mods.FriendsExpander
 
 	searchBar    *gtk.SearchBar
 	searchEntry  *gtk.SearchEntry
@@ -96,11 +101,22 @@ func NewChannelView(ctx context.Context) *ChannelView {
 		parent.ActivateAction("win.open-channel", gtkcord.NewChannelIDVariant(ch.id))
 	})
 
+	// mod: friendlist — wrap the active-DM list in a vertical Box so we
+	// can append the collapsible Friends expander underneath it. Both
+	// live inside the same ScrolledWindow and scroll as one unit.
+	contentBox := gtk.NewBox(gtk.OrientationVertical, 0)
+	contentBox.SetHExpand(true)
+	contentBox.Append(v.list)
+	v.friendsExpander = mods.NewFriendsExpander(ctx)
+	if v.friendsExpander != nil {
+		contentBox.Append(v.friendsExpander)
+	}
+
 	v.scroll = gtk.NewScrolledWindow()
 	v.scroll.SetPropagateNaturalHeight(true)
 	v.scroll.SetHExpand(true)
 	v.scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
-	v.scroll.SetChild(v.list)
+	v.scroll.SetChild(contentBox)
 
 	v.searchEntry = gtk.NewSearchEntry()
 	v.searchEntry.SetHExpand(true)
@@ -134,6 +150,13 @@ func NewChannelView(ctx context.Context) *ChannelView {
 	vis := gtkutil.WithVisibility(ctx, v)
 
 	state := gtkcord.FromContext(ctx)
+
+	// mod: friendlist — re-invalidate when the friend cache finishes
+	// loading (disk first, REST fallback). Without this the friends
+	// dropdown would stay empty on a cold first launch until some other
+	// gateway event nudged the view into re-rendering.
+	gtkcord.FriendCacheRefreshed.Connect(func() { v.Invalidate() })
+
 	state.BindHandler(vis, func(ev gateway.Event) {
 		// TODO: Channel events
 
@@ -246,6 +269,18 @@ func (v *ChannelView) Invalidate() {
 				"finally found DM channel to select",
 				"channel_id", v.selectID)
 		}
+	}
+
+	// mod: friendlist — refresh the collapsible Friends section with
+	// the set of friends who don't already have an open 1:1 DM.
+	if v.friendsExpander != nil {
+		active := make(map[discord.UserID]struct{}, len(chs))
+		for _, ch := range chs {
+			if ch.Type == discord.DirectMessage && len(ch.DMRecipients) > 0 {
+				active[ch.DMRecipients[0].ID] = struct{}{}
+			}
+		}
+		v.friendsExpander.Invalidate(active)
 	}
 }
 

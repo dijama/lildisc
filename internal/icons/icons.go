@@ -15,6 +15,14 @@ import (
 //go:embed lildisc.gresource
 var Resources []byte
 
+// LogoPNG is the raw bytes of lildisc_logo.png. Exposed so runtime consumers
+// like the SNI tray icon can decode it to pixel data, independent of the
+// gresource bundle. Keep in sync with the root lildisc_logo.png used for
+// README/docs.
+//
+//go:embed lildisc_logo.png
+var LogoPNG []byte
+
 func init() {
 	resources, err := gio.NewResourceFromData(glib.NewBytesWithGo(Resources))
 	if err != nil {

@@ -346,6 +346,15 @@ func NewView(ctx context.Context, ctrl Controller, chID discord.ChannelID) *View
 	v.UploadTray = NewUploadTray()
 	v.bigBox.Append(v.UploadTray)
 
+	// mod: mediahost — when a file is too large for Discord, instead of
+	// dropping it / nagging about Nitro, push it to litterbox.catbox.moe
+	// (with 0x0.st as a fallback) and paste the resulting URL into the
+	// composer at the cursor position. handleOversizeUpload manages a
+	// placeholder text range so the user can see what's uploading.
+	v.UploadTray.SetOversizeHandler(func(f *File) {
+		v.handleOversizeUpload(f)
+	})
+
 	v.Widget = &v.bigBox.Widget
 	v.SetPlaceholderMarkup("")
 
@@ -362,7 +371,7 @@ func NewView(ctx context.Context, ctrl Controller, chID discord.ChannelID) *View
 	// Attach to the Input (TextView) directly so we intercept before the
 	// TextView's default handler (which would paste the file path as text).
 	mods.SetupDragDrop(ctx, v.Input, func(f mods.DroppedFile) {
-		v.UploadTray.AddFile(ctx, &File{
+		v.addFileToTray(&File{
 			Name: f.Name,
 			Type: f.Type,
 			Size: f.Size,
@@ -472,8 +481,6 @@ func (v *View) upload() {
 }
 
 func (v *View) addFiles(list gio.ListModeller) {
-	state := gtkcord.FromContext(v.ctx)
-
 	go func() {
 		var i uint
 		for v.ctx.Err() == nil {
@@ -505,14 +512,72 @@ func (v *View) addFiles(list gio.ListModeller) {
 				}
 			}
 
-			maxUploadSize := state.DetermineUploadSize(v.Input.GuildID())
-			glib.IdleAdd(func() {
-				v.UploadTray.SetMaxUploadSize(int64(maxUploadSize))
-				v.UploadTray.AddFile(v.ctx, f)
-			})
+			glib.IdleAdd(func() { v.addFileToTray(f) })
 			i++
 		}
 	}()
+}
+
+// addFileToTray is the single entry point for adding a file to the upload
+// tray from any code path (file picker, drag-drop, clipboard paste). It
+// refreshes the tray's max upload size from the current channel's
+// effective Discord limit before delegating to AddFile, so the oversize
+// check (and the mediahost fallback handler) sees the correct ceiling.
+// Must be called on the GTK main thread.
+func (v *View) addFileToTray(f *File) {
+	state := gtkcord.FromContext(v.ctx)
+	maxUploadSize := state.DetermineUploadSize(v.Input.GuildID())
+	v.UploadTray.SetMaxUploadSize(int64(maxUploadSize))
+	v.UploadTray.AddFile(v.ctx, f)
+}
+
+// handleOversizeUpload is the oversize handler installed on UploadTray.
+// It inserts a placeholder string at the cursor position so the user can
+// see what's uploading, kicks off the media-host upload on a background
+// goroutine, and replaces the placeholder with the resulting URL (or an
+// error marker) when the upload terminates.
+//
+// The placeholder range is tracked via two gtk.TextMarks with opposing
+// gravities so the slot survives the user typing around it.
+func (v *View) handleOversizeUpload(f *File) {
+	buf := v.Input.Buffer
+	placeholder := "[uploading " + f.Name + " to litterbox.catbox.moe…] "
+
+	// Insert at the current cursor position. CreateMark with leftGravity=true
+	// makes startMark stick at the start of the inserted text; the default
+	// (leftGravity=false) makes endMark stick at the end. This way the user
+	// can keep typing before or after the placeholder without breaking it.
+	cursor := buf.IterAtMark(buf.GetInsert())
+	startMark := buf.CreateMark("", cursor, true)
+	buf.Insert(cursor, placeholder)
+	endIter := buf.IterAtMark(buf.GetInsert())
+	endMark := buf.CreateMark("", endIter, false)
+
+	mods.UploadToMediaHost(v.ctx, mods.MediaUploadRequest{
+		Name:     f.Name,
+		MIMEType: f.Type,
+		Size:     f.Size,
+		Open:     f.Open,
+	}, func(url string, err error) {
+		// Always on the GTK main thread.
+		startIter := buf.IterAtMark(startMark)
+		endIter := buf.IterAtMark(endMark)
+		buf.Delete(startIter, endIter)
+
+		replaceAt := buf.IterAtMark(startMark)
+		var final string
+		if err != nil {
+			slog.Warn("composer: media host upload failed",
+				"name", f.Name, "err", err)
+			final = "[upload failed: " + f.Name + "] "
+		} else {
+			final = url + " "
+		}
+		buf.Insert(replaceAt, final)
+
+		buf.DeleteMark(startMark)
+		buf.DeleteMark(endMark)
+	})
 }
 
 func (v *View) peekContent() (string, []*File) {
@@ -809,7 +874,7 @@ func (v inputControllerView) EditLastMessage() bool {
 }
 
 func (v inputControllerView) PasteClipboardFile(file *File) {
-	v.UploadTray.AddFile(v.ctx, file)
+	v.addFileToTray(file)
 }
 
 func (v inputControllerView) UpdateMessageLength(length int) {

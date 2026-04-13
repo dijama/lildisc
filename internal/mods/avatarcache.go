@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/diamondburned/gotkit/app/prefs"
+	"github.com/dijama/lildisc/internal/signaling"
 )
 
 var enableAvatarCacheBust = prefs.NewBool(true, prefs.PropMeta{
@@ -15,6 +16,12 @@ var enableAvatarCacheBust = prefs.NewBool(true, prefs.PropMeta{
 	Section:     "Mods",
 	Description: "Automatically clear cached avatar when a user's profile picture changes.",
 })
+
+// AvatarRefreshSignaler fires when the user manually invalidates their own
+// avatar via the win.refresh-avatar action. The user-bar widget subscribes
+// to it and refetches/redisplays in response. Signal() must be called from
+// the GTK main thread because listeners touch widgets directly.
+var AvatarRefreshSignaler signaling.Signaler
 
 // BustImageCache removes the on-disk cached file for the given URL from
 // LilDisc's image cache (~/.cache/lildisc/img2/).

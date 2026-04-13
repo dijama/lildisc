@@ -15,6 +15,7 @@ import (
 	"github.com/pkg/errors"
 	"libdb.so/ctxt"
 	"github.com/dijama/lildisc/internal/gtkcord"
+	"github.com/dijama/lildisc/internal/mods"
 	"github.com/dijama/lildisc/internal/window/login"
 	"github.com/dijama/lildisc/internal/window/quickswitcher"
 )
@@ -108,6 +109,7 @@ func (w *Window) initActions() {
 		"open-dms":       func() { w.useChatPage((*ChatPage).OpenDMs) },
 		"reset-view":     func() { w.useChatPage((*ChatPage).ResetView) },
 		"quick-switcher": func() { w.useChatPage((*ChatPage).OpenQuickSwitcher) },
+		"refresh-avatar": func() { mods.AvatarRefreshSignaler.Signal() },
 	})
 
 	gtkutil.AddActionCallbacks(w, map[string]gtkutil.ActionCallback{

@@ -2,18 +2,14 @@ package composer
 
 import (
 	"context"
-	"fmt"
-	"html"
-	"path/filepath"
+	"log/slog"
 	"slices"
 	"strings"
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/core/glib"
-	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
-	"github.com/diamondburned/gotkit/app"
 	"github.com/diamondburned/gotkit/app/locale"
 	"github.com/diamondburned/gotkit/gtkutil/cssutil"
 	"github.com/dustin/go-humanize"
@@ -41,6 +37,20 @@ type UploadTray struct {
 	*gtk.Box
 	files         []uploadFile
 	maxUploadSize int64
+
+	// mod: mediahost — invoked when a file exceeds maxUploadSize, in
+	// place of the old "File Too Large" alert dialog. The composer
+	// installs a handler that uploads to litterbox.catbox.moe (with
+	// 0x0.st as a fallback) and pastes the resulting URL into the
+	// input buffer. nil = legacy behaviour (drop the file silently).
+	onOversize func(*File)
+}
+
+// SetOversizeHandler installs a callback that takes ownership of any
+// file added to the tray that's larger than maxUploadSize. The handler
+// runs on the GTK main thread (same thread as AddFile callers).
+func (t *UploadTray) SetOversizeHandler(f func(*File)) {
+	t.onOversize = f
 }
 
 type uploadFile struct {
@@ -85,61 +95,27 @@ func NewUploadTray() *UploadTray {
 }
 
 // SetMaxUploadSize sets the maximum upload size for the tray.
-// If the size is set to 0, it will not limit the upload size.
-// If a file exceeds this size, it will not be added to the tray, and an alert
-// will be shown to the user.
+// If the size is set to 0, the tray does not enforce a limit.
+// Files exceeding this size are routed to the oversize handler installed
+// via SetOversizeHandler instead of being added to the tray.
 func (t *UploadTray) SetMaxUploadSize(size int64) {
 	t.maxUploadSize = size
 }
 
-// AddFile adds a file into the tray.
+// AddFile adds a file into the tray. If the file exceeds maxUploadSize and
+// an oversize handler is installed (via SetOversizeHandler), the handler
+// takes ownership of the file and the tray is left untouched. If no
+// handler is installed, the oversize file is dropped with a slog warning.
 func (t *UploadTray) AddFile(ctx context.Context, f *File) {
 	if t.maxUploadSize > 0 && f.Size > t.maxUploadSize {
-		// Ellipsize the file name if it is too long. Preserve the file
-		// extension for convenience.
-		shortName := f.Name
-		if len(shortName) > 50 {
-			shortName = f.Name[:45] + "…" + strings.TrimPrefix(filepath.Ext(f.Name), ".")
+		if t.onOversize != nil {
+			t.onOversize(f)
+			return
 		}
-
-		alert := adw.NewAlertDialog(
-			locale.Get("File Too Large"),
-			fmt.Sprintf(
-				"%s\n%s",
-				locale.Sprintf(
-					"<i>%s</i> (%s) is larger than %s.",
-					html.EscapeString(shortName),
-					humanize.IBytes(uint64(f.Size)),
-					humanize.IBytes(uint64(t.maxUploadSize)),
-				),
-				locale.Get("Discord will not allow you to upload this file."),
-			))
-		alert.SetBodyUseMarkup(true)
-		alert.SetPreferWideLayout(true)
-
-		alert.AddResponse("continue", locale.Get("Continue (dangerous)"))
-		alert.AddResponse("skip", locale.Get("Skip"))
-		alert.SetResponseAppearance("continue", adw.ResponseDestructive)
-		alert.SetResponseAppearance("skip", adw.ResponseDefault)
-		alert.SetDefaultResponse("skip")
-		alert.SetCloseResponse("skip")
-		// Disable the continue response by default unless users start
-		// complaining in our issues otherwise.
-		alert.SetResponseEnabled("continue", false)
-
-		alert.Choose(ctx, app.WindowFromContext(ctx), func(res gio.AsyncResulter) {
-			response := alert.ChooseFinish(res)
-			switch response {
-			case "skip":
-				// do nothing
-			case "continue":
-				t.addFile(f)
-			}
-		})
-
+		slog.Warn("upload tray: oversize file dropped, no handler",
+			"name", f.Name, "size", f.Size, "limit", t.maxUploadSize)
 		return
 	}
-
 	t.addFile(f)
 }
 

@@ -20,6 +20,16 @@ var _ = cssutil.WriteCSS(`
 	.mod-sidebar-compact .direct-channel-avatar {
 		margin-right: 0;
 	}
+	.mod-sidebar-compact .mod-friend-row {
+		padding: 4px 2px;
+	}
+	.mod-sidebar-compact .mod-friend-row-avatar {
+		margin-right: 0;
+	}
+	.mod-sidebar-compact .mod-friend-list-expander {
+		margin: 6px 2px 2px 2px;
+		padding-top: 4px;
+	}
 `)
 
 // compactThreshold is the width (in px) of the sidebar's Right section
@@ -70,9 +80,10 @@ func setCompactChildren(widget *gtk.Widget, compact bool) {
 		for _, c := range classes {
 			switch c {
 			case "direct-channel-name", "direct-channel-readindicator", "direct-searchbar",
-				"user-bar-name", "user-bar-menu", "user-bar-status":
+				"user-bar-name", "user-bar-menu", "user-bar-status",
+				"mod-friend-row-name":
 				child.SetVisible(!compact)
-			case "direct-channel", "user-bar":
+			case "direct-channel", "user-bar", "mod-friend-row":
 				// Center the avatar when compact by centering the row's box.
 				if compact {
 					child.SetHAlign(gtk.AlignCenter)

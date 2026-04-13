@@ -33,6 +33,7 @@ import (
 	"github.com/diamondburned/ningen/v3"
 	"github.com/diamondburned/ningen/v3/discordmd"
 	"github.com/dijama/lildisc/internal/colorhash"
+	"github.com/dijama/lildisc/internal/signaling"
 
 	coreglib "github.com/diamondburned/gotk4/pkg/core/glib"
 )
@@ -127,6 +128,35 @@ func Wrap(state *state.State) *State {
 	}
 
 	ningen := ningen.FromState(state)
+
+	// mod: friend list — maintain our own friend cache from live
+	// relationship events. The pinned ningen RelationshipState only
+	// exposes relationship *types*, not the full User object or
+	// nickname, so we duplicate the minimal state we need for the DM
+	// sidebar dropdown and author label overrides.
+	ningen.AddHandler(func(ev *gateway.RelationshipAddEvent) {
+		if ev.Type != discord.FriendRelationship {
+			return
+		}
+		rec := FriendRecord{User: ev.User}
+		if ev.Nickname != nil {
+			rec.Nickname = *ev.Nickname
+		}
+		friendCacheInstance.mu.Lock()
+		if friendCacheInstance.friends == nil {
+			friendCacheInstance.friends = make(map[discord.UserID]FriendRecord)
+		}
+		friendCacheInstance.friends[ev.UserID] = rec
+		friendCacheInstance.mu.Unlock()
+		glib.IdleAdd(FriendCacheRefreshed.Signal)
+	})
+	ningen.AddHandler(func(ev *gateway.RelationshipRemoveEvent) {
+		friendCacheInstance.mu.Lock()
+		delete(friendCacheInstance.friends, ev.UserID)
+		friendCacheInstance.mu.Unlock()
+		glib.IdleAdd(FriendCacheRefreshed.Signal)
+	})
+
 	return &State{
 		MainThreadHandler: NewMainThreadHandler(ningen.Handler),
 		State:             ningen,
@@ -171,64 +201,108 @@ func (s *State) FetchMeFromAPI() *discord.User {
 	return &me
 }
 
-// --- mod: friend nicknames ---
-// The pinned ningen version's RelationshipState only exposes RelationshipType,
-// not the full Relationship struct with Nickname. We fetch friend nicknames
-// from the Discord REST API and cache them.
+// --- mod: friend nicknames + friend list ---
+// The pinned ningen version's RelationshipState only exposes
+// RelationshipType — it doesn't carry the User object or nickname. We
+// fetch the full relationship list from the Discord REST API and keep our
+// own cache with richer entries so:
+//   - chat author labels can substitute personal nicknames (MemberMarkup,
+//     userName)
+//   - the DM sidebar "Friends" dropdown (mods.FriendsExpander) can list
+//     friends who don't have an active DM, with avatars and names
 
-type friendNicknameCache struct {
-	mu    sync.RWMutex
-	nicks map[discord.UserID]string
+// FriendRecord is a cached friend: the full Discord User plus the
+// personal nickname the local user assigned to them (empty if none).
+type FriendRecord struct {
+	User     discord.User `json:"user"`
+	Nickname string       `json:"nickname,omitempty"`
 }
 
-var friendNicknames friendNicknameCache
+type friendCache struct {
+	mu      sync.RWMutex
+	friends map[discord.UserID]FriendRecord
+}
 
-func (c *friendNicknameCache) get(id discord.UserID) string {
+var friendCacheInstance friendCache
+
+// FriendCacheRefreshed fires on the GTK main thread whenever the friend
+// cache is repopulated (from disk on startup, from the REST fetch, or
+// from live gateway events later). UI components that render friend data
+// — the DM sidebar Friends expander in particular — subscribe to this
+// so they can reflect changes without a restart.
+var FriendCacheRefreshed signaling.Signaler
+
+func (c *friendCache) nickname(id discord.UserID) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.nicks == nil {
-		return ""
+	if rec, ok := c.friends[id]; ok {
+		return rec.Nickname
 	}
-	return c.nicks[id]
+	return ""
 }
 
-func (c *friendNicknameCache) loaded() bool {
+func (c *friendCache) loaded() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.nicks != nil
+	return c.friends != nil
 }
 
-// friendNicksCacheFile returns the path to the friend nicknames cache.
-func friendNicksCacheFile() string {
+func (c *friendCache) each(fn func(FriendRecord) (stop bool)) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, rec := range c.friends {
+		if fn(rec) {
+			return
+		}
+	}
+}
+
+func (c *friendCache) set(friends map[discord.UserID]FriendRecord) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.friends = friends
+}
+
+// EachFriend iterates cached friend records. Read-only; the callback
+// returns true to stop iteration early. Safe to call from any goroutine.
+func (s *State) EachFriend(fn func(FriendRecord) (stop bool)) {
+	friendCacheInstance.each(fn)
+}
+
+// friendCacheFile returns the path of the on-disk friend cache.
+func friendCacheFile() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "lildisc", "api_cache", "friend_nicknames.json")
+	return filepath.Join(dir, "lildisc", "api_cache", "friend_cache.json")
 }
 
-// FetchFriendNicknames loads friend nicknames from disk cache first,
-// then falls back to the Discord API. Safe to call from a goroutine.
+// FetchFriendNicknames populates the friend cache from the on-disk cache
+// first, then falls back to the Discord REST API. Kept under the old
+// name so mods.HookState doesn't need to change. Safe to call from a
+// goroutine. Fires FriendCacheRefreshed on the main thread on success.
 func (s *State) FetchFriendNicknames() {
-	if friendNicknames.loaded() {
+	if friendCacheInstance.loaded() {
 		return
 	}
 
-	// Try disk cache first.
-	if path := friendNicksCacheFile(); path != "" {
+	// Try the on-disk cache first.
+	if path := friendCacheFile(); path != "" {
 		if data, err := os.ReadFile(path); err == nil {
-			var nicks map[discord.UserID]string
-			if json.Unmarshal(data, &nicks) == nil && len(nicks) > 0 {
-				friendNicknames.mu.Lock()
-				friendNicknames.nicks = nicks
-				friendNicknames.mu.Unlock()
-				slog.Info("FetchFriendNicknames: loaded from cache", "count", len(nicks))
+			var cached map[discord.UserID]FriendRecord
+			if json.Unmarshal(data, &cached) == nil && len(cached) > 0 {
+				friendCacheInstance.set(cached)
+				slog.Info("friend cache: loaded from disk", "count", len(cached))
+				glib.IdleAdd(FriendCacheRefreshed.Signal)
 				return
 			}
 		}
 	}
 
-	// Fetch from API.
+	// Fetch from REST. /users/@me/relationships returns the full list
+	// with each entry carrying a nested User object and a nullable
+	// nickname string.
 	req, err := http.NewRequest("GET", "https://discord.com/api/v10/users/@me/relationships", nil)
 	if err != nil {
 		return
@@ -237,45 +311,58 @@ func (s *State) FetchFriendNicknames() {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		slog.Warn("FetchFriendNicknames: request failed", "err", err)
+		slog.Warn("friend cache: REST request failed", "err", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		slog.Warn("FetchFriendNicknames: bad status", "status", resp.StatusCode)
+		slog.Warn("friend cache: REST bad status", "status", resp.StatusCode)
 		return
 	}
 
 	var rels []struct {
 		ID       discord.UserID `json:"id"`
+		Type     int            `json:"type"`
 		Nickname *string        `json:"nickname"`
+		User     discord.User   `json:"user"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&rels); err != nil {
-		slog.Warn("FetchFriendNicknames: decode failed", "err", err)
+		slog.Warn("friend cache: decode failed", "err", err)
 		return
 	}
 
-	nicks := make(map[discord.UserID]string)
+	// Type 1 = friend (see discord.FriendRelationship). We only care
+	// about that; blocked / pending / outgoing requests are excluded.
+	const typeFriend = 1
+	cached := make(map[discord.UserID]FriendRecord)
 	for _, r := range rels {
-		if r.Nickname != nil && *r.Nickname != "" {
-			nicks[r.ID] = *r.Nickname
+		if r.Type != typeFriend {
+			continue
 		}
+		rec := FriendRecord{User: r.User}
+		if r.Nickname != nil {
+			rec.Nickname = *r.Nickname
+		}
+		// Prefer the nested user ID but fall back to the top-level id
+		// for robustness if the API ever omits one.
+		if !rec.User.ID.IsValid() {
+			rec.User.ID = r.ID
+		}
+		cached[rec.User.ID] = rec
 	}
 
-	friendNicknames.mu.Lock()
-	friendNicknames.nicks = nicks
-	friendNicknames.mu.Unlock()
+	friendCacheInstance.set(cached)
 
-	// Save to disk.
-	if path := friendNicksCacheFile(); path != "" {
+	if path := friendCacheFile(); path != "" {
 		os.MkdirAll(filepath.Dir(path), 0o755)
-		if data, err := json.Marshal(nicks); err == nil {
+		if data, err := json.Marshal(cached); err == nil {
 			os.WriteFile(path, data, 0o644)
 		}
 	}
 
-	slog.Info("FetchFriendNicknames: loaded from API", "count", len(nicks))
+	slog.Info("friend cache: loaded from REST", "count", len(cached))
+	glib.IdleAdd(FriendCacheRefreshed.Signal)
 }
 
 var rawEventsOnce sync.Once
@@ -565,7 +652,7 @@ func (s *State) MemberMarkup(gID discord.GuildID, u *discord.GuildUser, mods ...
 	// mod: friend nicknames — if the user set a personal nickname for this
 	// person (via Relationships), use it as the primary display name.
 	hasFriendNick := false
-	if nick := friendNicknames.get(u.ID); nick != "" {
+	if nick := friendCacheInstance.nickname(u.ID); nick != "" {
 		suffix += fmt.Sprintf(
 			` <span weight="normal">(%s)</span>`,
 			html.EscapeString(name),
@@ -800,6 +887,17 @@ func RecipientNames(ch *discord.Channel) string {
 }
 
 func userName(u *discord.User) string {
+	// mod: friend nicknames — if the user set a personal nickname for this
+	// person via Relationships, prefer it. This propagates through to:
+	//   - sidebar DM list (channelName -> userName for DirectMessage)
+	//   - sidebar group DM list (RecipientNames -> userName for each member)
+	//   - chat window title bar (ChannelName for the active DM)
+	//   - quick switcher results (which call ChannelName)
+	// keeping it consistent with how MemberMarkup overrides display names
+	// in message author labels.
+	if nick := friendCacheInstance.nickname(u.ID); nick != "" {
+		return nick
+	}
 	if u.DisplayName == "" {
 		return u.Username
 	}

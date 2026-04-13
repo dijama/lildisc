@@ -12,6 +12,7 @@ import (
 	"github.com/diamondburned/arikawa/v3/discord"
 	"github.com/diamondburned/chatkit/components/embed"
 	"github.com/diamondburned/chatkit/md/mdrender"
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
@@ -903,23 +904,58 @@ func openViewer(ctx context.Context, uri string, opts embed.Opts, dims ...int) {
 	// mod: videoplayer — allow interacting with main window while viewer is open
 	embedViewer.SetModal(false)
 
-	// mod: embeds — size viewer to match content dimensions
+	// mod: embeds — size viewer to match content dimensions, capped to
+	// the active monitor's usable area so oversized media doesn't open
+	// a window taller or wider than the screen.
 	if len(dims) >= 2 && dims[0] > 0 && dims[1] > 0 {
 		w, h := dims[0], dims[1]
-		// Cap to reasonable screen bounds and add space for header/controls.
 		const headerH = 48
-		if w > 1600 {
-			h = h * 1600 / w
-			w = 1600
+		maxW, maxH := viewerMaxSize()
+		maxH -= headerH
+		if w > maxW {
+			h = h * maxW / w
+			w = maxW
 		}
-		if h > 1000 {
-			w = w * 1000 / h
-			h = 1000
+		if h > maxH {
+			w = w * maxH / h
+			h = maxH
 		}
 		embedViewer.SetDefaultSize(w, h+headerH)
 	}
 
 	embedViewer.Show()
+}
+
+// viewerMaxSize returns the largest dimensions the media viewer should
+// open at — the smallest connected monitor's geometry minus a margin so
+// window decorations and panels don't push it off-screen on whichever
+// display the user happens to drag it to.
+func viewerMaxSize() (w, h int) {
+	const fallbackW, fallbackH = 1600, 1000
+	const margin = 80
+
+	display := gdk.DisplayGetDefault()
+	if display == nil {
+		return fallbackW, fallbackH
+	}
+
+	w, h = -1, -1
+	gtkutil.EachList(display.Monitors(), func(mon *gdk.Monitor) {
+		geom := mon.Geometry()
+		if w < 0 || geom.Width() < w {
+			w = geom.Width()
+		}
+		if h < 0 || geom.Height() < h {
+			h = geom.Height()
+		}
+	})
+
+	w -= margin
+	h -= margin
+	if w <= 0 || h <= 0 {
+		return fallbackW, fallbackH
+	}
+	return w, h
 }
 
 // stripMarkdownEscapes removes backslash escapes from embed text.

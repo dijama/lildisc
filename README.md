@@ -26,14 +26,18 @@ All optional features are independently toggleable in the Mods preferences pane 
 - **Resizable sidebar** — draggable divider between sidebar and chat
 - **Compact mode** — narrows below 180px, collapses to avatar-only
 - **Presence badges** — colored status dots overlaid on avatar corners (online/idle/DND/offline)
+- **Friend nicknames** — personal nicknames set via Discord Relationships are used everywhere (DM list, group DM names, chat author labels, quick switcher)
+- **Friends dropdown in DMs** — collapsible "Friends (N)" section under the active DM list showing friends who don't currently have an open DM; click to start a new conversation
 
 ### Composer
 - **Drag-and-drop upload** — drop files onto the message input
 - **Clipboard image paste** — Ctrl+V works for images copied from browsers
 - **Reply preview bar** — shows what you're replying to above the input
+- **GIF picker** — Tenor search with inline previews
+- **Sticker picker** — server stickers and default sticker packs, grouped by source
+- **Oversize upload fallback** — files too large for Discord's attachment limit are uploaded to [litterbox.catbox.moe](https://litterbox.catbox.moe) (72h expiry, 1 GiB cap) with [0x0.st](https://0x0.st) as a second fallback, and the resulting URL is pasted into the composer in place of the attachment
 
 ### Channels
-- **Hidden channels** — shows locked channels you can't access, with a lock icon
 - **Channel context menu** — right-click for mark-as-read and copy-channel-ID
 
 ### Other
@@ -45,7 +49,6 @@ All optional features are independently toggleable in the Mods preferences pane 
 - **Server emoji picker** — all server emojis with fuzzy search
 - **Notification controls** — notify-all and mute-respect options
 - **mpv video player** — plays videos via mpv instead of the built-in player
-- **Privacy** — randomizes uploaded filenames and strips EXIF metadata
 - **Cache auto-clean** — periodically clears stale image cache entries
 - **Lazy load embeds** — defers loading embed images until they scroll into view
 
@@ -72,26 +75,29 @@ All features are in `internal/mods/` as independent files. Each mod has a prefer
 
 ```
 internal/mods/
-  mods.go           Init()/HookState() entry points
-  embeds.go         GIF/video autoplay, GIFV-to-GIF, embed improvements
-  embedmenu.go      Right-click save/copy/open on media
-  presence.go       Status indicator dots
-  compactsidebar.go Compact avatar-only sidebar mode
-  dragdrop.go       Drag-and-drop file upload
-  replypreview.go   Reply preview bar
-  avatarcache.go    Avatar cache busting
-  cacheclean.go     Cache auto-clean
-  channelmenu.go    Channel context menu
-  customcss.go      Custom CSS loading
-  emojipicker.go    Server emoji picker
-  hiddenchannels.go Hidden channels with lock icon
-  keybinds.go       Keyboard shortcuts
-  lazyload.go       Lazy load embeds
-  notifications.go  Notification improvements
-  privacy.go        Filename randomization + EXIF strip
-  search.go         Message search
-  tray.go           System tray
-  videoplayer.go    mpv video player
+  mods.go            Init()/HookState() entry points
+  apicache.go        Shared on-disk JSON cache helper
+  avatarcache.go     Avatar cache busting + manual-refresh signaler
+  cacheclean.go      Cache auto-clean
+  channelmenu.go     Channel context menu
+  compactsidebar.go  Compact avatar-only sidebar mode
+  customcss.go       Custom CSS loading
+  dragdrop.go        Drag-and-drop file upload
+  embedmenu.go       Right-click save/copy/open on media
+  embeds.go          GIF/video autoplay, GIFV-to-GIF, embed improvements
+  emojipicker.go     Server emoji picker
+  friendlist.go      Collapsible "Friends" dropdown in DM sidebar
+  gifpicker.go       Tenor-backed GIF picker
+  keybinds.go        Keyboard shortcuts
+  lazyload.go        Lazy load embeds
+  mediahost.go       Oversize-upload fallback (litterbox / 0x0.st)
+  notifications.go   Notification improvements
+  presence.go        Status indicator dots
+  replypreview.go    Reply preview bar
+  search.go          Message search
+  stickerpicker.go   Sticker picker
+  tray.go            System tray
+  videoplayer.go     mpv video player
 ```
 
 ## Logging In

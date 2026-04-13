@@ -144,13 +144,19 @@ func NewChatPage(ctx context.Context, w *Window) *ChatPage {
 
 	// mod: resizable sidebar — use Paned for draggable divider
 	p.Sidebar.SetSizeRequest(0, -1)
+	// mod: responsive chat — allow the chat side to shrink below its
+	// children's natural min width, and declare a min-width of 0 on the
+	// box itself. Without this, the Paned refuses to size below the chat
+	// column's requisition and the whole window hits a floor well above
+	// the 550sp breakpoint.
+	rightBox.SetSizeRequest(0, -1)
 	p.Paned = gtk.NewPaned(gtk.OrientationHorizontal)
 	p.Paned.SetStartChild(p.Sidebar)
 	p.Paned.SetEndChild(rightBox)
 	p.Paned.SetResizeStartChild(false)
 	p.Paned.SetShrinkStartChild(false)
 	p.Paned.SetResizeEndChild(true)
-	p.Paned.SetShrinkEndChild(false)
+	p.Paned.SetShrinkEndChild(true)
 	p.Paned.SetPosition(300)
 	p.Paned.SetWideHandle(true)
 
