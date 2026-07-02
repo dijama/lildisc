@@ -19,9 +19,9 @@ import (
 )
 
 var enableFriendList = prefs.NewBool(true, prefs.PropMeta{
-	Name:        "Friends Dropdown in DMs",
+	Name:        "More Dropdown in DMs",
 	Section:     "Mods",
-	Description: "Show a collapsible list of friends without an active DM under the DM list. Clicking a friend opens a new DM with them.",
+	Description: "Show a collapsible \"More\" list of friends without an active DM under the DM list. Clicking a friend opens a new DM with them.",
 })
 
 var _ = cssutil.WriteCSS(`
@@ -98,14 +98,12 @@ func NewFriendsExpander(ctx context.Context) *FriendsExpander {
 	fe.list = gtk.NewListBox()
 	fe.list.AddCSSClass("mod-friend-list")
 	fe.list.SetSelectionMode(gtk.SelectionSingle)
-	// Double-click (or Enter on a selected row) opens the DM. Single
-	// click just selects so accidental taps don't pop a chat open.
-	fe.list.SetActivateOnSingleClick(false)
+	fe.list.SetActivateOnSingleClick(true)
 	fe.list.ConnectRowActivated(func(r *gtk.ListBoxRow) {
 		fe.handleRowClick(r)
 	})
 
-	fe.Expander = gtk.NewExpander("Friends")
+	fe.Expander = gtk.NewExpander("More")
 	fe.Expander.AddCSSClass("mod-friend-list-expander")
 	fe.Expander.SetChild(fe.list)
 	fe.Expander.SetExpanded(true)
@@ -175,7 +173,7 @@ func (fe *FriendsExpander) Invalidate(activeDMRecipients map[discord.UserID]stru
 		fe.list.Append(row)
 	}
 
-	fe.Expander.SetLabel(fmt.Sprintf("Friends (%d)", len(friends)))
+	fe.Expander.SetLabel(fmt.Sprintf("More (%d)", len(friends)))
 }
 
 // handleRowClick looks up the clicked row in the rows map, then opens

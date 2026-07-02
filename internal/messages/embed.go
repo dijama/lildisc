@@ -157,6 +157,13 @@ func newAttachment(ctx context.Context, attachment *discord.Attachment) gtk.Widg
 		mimeType, _, _ = strings.Cut(attachment.ContentType, "/")
 	}
 
+	// mod: audioplayer — inline playback for voice messages and audio files.
+	if mods.IsAudioAttachment(attachment) {
+		if player := mods.NewAudioPlayer(ctx, attachment); player != nil {
+			return player
+		}
+	}
+
 	switch mimeType {
 	case "image", "video":
 		// Make this attachment like an image embed.
@@ -752,6 +759,13 @@ func newNormalEmbed(ctx context.Context, msg *discord.Message, msgEmbed *discord
 						openViewer(ctx, videoURL, opts, int(msgEmbed.Video.Width), int(msgEmbed.Video.Height))
 					})
 				case embed.EmbedTypeVideo:
+					// mod: videoplayer — for hosts whose extracted URLs are
+					// header-gated (TikTok etc.), the native viewer can't fetch
+					// the stream. Hand off to mpv directly — yt-dlp inside mpv
+					// applies the right headers.
+					if mods.PrefersMpv(videoURL) && mods.TryPlayVideo(videoURL) {
+						return
+					}
 					// mod: videoplayer — for streaming hosts (YouTube etc.),
 					// show a loading popup while yt-dlp extracts the stream URL,
 					// then open the native viewer with the direct URL.

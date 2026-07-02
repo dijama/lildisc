@@ -65,6 +65,21 @@ func NewPresenceDot(ctx context.Context, userID discord.UserID, guildID discord.
 		}
 	})
 
+	// Discord never dispatches PresenceUpdateEvent for the current user's
+	// own status changes. Self-status is instead carried by SESSIONS_REPLACE
+	// (remote status change via another session) and USER_SETTINGS_UPDATE
+	// (local status change via the in-app dropdown). ningen writes both
+	// into PresenceStore silently, so without explicit subscriptions the
+	// self-dot never refreshes.
+	if me, _ := state.Me(); me != nil && me.ID == userID {
+		state.AddHandlerForWidget(dot, func(*gateway.SessionsReplaceEvent) {
+			updatePresenceDot(state, dot, userID, guildID)
+		})
+		state.AddHandlerForWidget(dot, func(*gateway.UserSettingsUpdateEvent) {
+			updatePresenceDot(state, dot, userID, guildID)
+		})
+	}
+
 	return dot
 }
 
@@ -211,6 +226,16 @@ func SetupPresenceTooltip(ctx context.Context, widget gtk.Widgetter, userID disc
 			update()
 		}
 	})
+
+	// Self-status carriers; see NewPresenceDot for the rationale.
+	if me, _ := state.Me(); me != nil && me.ID == userID {
+		state.AddHandlerForWidget(widget, func(*gateway.SessionsReplaceEvent) {
+			update()
+		})
+		state.AddHandlerForWidget(widget, func(*gateway.UserSettingsUpdateEvent) {
+			update()
+		})
+	}
 }
 
 func statusText(status discord.Status) string {

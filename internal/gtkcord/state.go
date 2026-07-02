@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -718,6 +719,15 @@ func hashUserColor(user *discord.User) string {
 	return colorhash.RGBHex(color)
 }
 
+// blockquoteConcatFix matches a "> " blockquote marker that directly
+// follows non-whitespace. The ningen BasicRenderer emits "> " at the
+// start of each blockquote paragraph but skips paragraph-exit
+// newlines, so multi-line quoted source collapses into
+// "line1> line2". The replacement reinserts the missing separator so
+// the preview reads as two lines instead of showing a stray ">"
+// mid-sentence.
+var blockquoteConcatFix = regexp.MustCompile(`(\S)> `)
+
 // MessagePreview renders the message into a short content string.
 func (s *State) MessagePreview(msg *discord.Message) string {
 	b := strings.Builder{}
@@ -728,6 +738,7 @@ func (s *State) MessagePreview(msg *discord.Message) string {
 	discordmd.DefaultRenderer.Render(&b, src, node)
 
 	preview := strings.TrimRight(b.String(), "\n")
+	preview = blockquoteConcatFix.ReplaceAllString(preview, "$1\n> ")
 	if preview != "" {
 		return preview
 	}

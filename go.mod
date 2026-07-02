@@ -4,6 +4,9 @@ go 1.24.0
 
 // replace github.com/diamondburned/gotk4/pkg => github.com/diamondburned/gotk4/pkg v0.3.2-0.20250222233909-d6bdcc0f7298
 
+// Local patch: fix GtkMediaFile leak in video/GIFV embeds (upstream PR pending).
+replace github.com/diamondburned/chatkit => ../libs/chatkit
+
 require (
 	github.com/diamondburned/adaptive v0.0.2-0.20221227093656-fa139be203a8
 	github.com/diamondburned/arikawa/v3 v3.6.0

@@ -18,6 +18,7 @@ import (
 	"github.com/diamondburned/gotk4/pkg/pango"
 	"github.com/diamondburned/gotkit/app"
 	"github.com/diamondburned/gotkit/app/locale"
+	"github.com/diamondburned/gotkit/components/onlineimage"
 	"github.com/diamondburned/gotkit/gtkutil"
 	"github.com/diamondburned/gotkit/gtkutil/cssutil"
 	"github.com/diamondburned/gotkit/gtkutil/imgutil"
@@ -67,6 +68,10 @@ var contentCSS = cssutil.Applier("message-content-box", `
 	}
 	.message-header-blockquote > * {
 		font-size: 0.9em;
+	}
+	.message-reply-thumb {
+		border-radius: 4px;
+		background-color: alpha(@theme_fg_color, 0.08);
 	}
 	.message-interaction-name {
 		margin-left: 0.25em;
@@ -359,42 +364,98 @@ func (c *Content) newReplyBox(m *discord.Message) gtk.Widgetter {
 	chip.Unpad()
 	box.Append(chip)
 
-	if preview := state.MessagePreview(referencedMsg); preview != "" {
-		// Force single line.
-		preview = strings.ReplaceAll(preview, "\n", "  ")
-		markup := fmt.Sprintf(
-			`<a href="lildisc://reply">%s</a>`,
-			html.EscapeString(preview),
-		)
+	imgURL, imgProxy, imgW, imgH := replyImage(referencedMsg)
+	// When the message content is exactly the URL of its single image
+	// embed, Discord (and our main content renderer) drops the text —
+	// mirror that here so the reply preview doesn't show the raw URL.
+	isBareImageURL := imgURL != "" &&
+		referencedMsg.Content != "" &&
+		len(referencedMsg.Embeds) == 1 &&
+		referencedMsg.Embeds[0].Type == discord.ImageEmbed &&
+		string(referencedMsg.Embeds[0].URL) == referencedMsg.Content
 
-		reply := gtk.NewLabel(markup)
-		reply.AddCSSClass("message-reply-content")
-		reply.SetUseMarkup(true)
-		reply.SetTooltipText(preview)
-		reply.SetEllipsize(pango.EllipsizeEnd)
-		reply.SetLines(1)
-		reply.SetXAlign(0)
-		reply.ConnectActivateLink(func(link string) bool {
-			slog.Debug(
-				"Activated message reference link",
-				"link", link,
-				"message_id", m.ID,
-				"reference_id", referencedMsg.ID)
+	preview := state.MessagePreview(referencedMsg)
+	showText := preview != "" && !isBareImageURL
+	// If the preview text is only the attachment-filename fallback
+	// (content empty, MessagePreview returned filenames), the thumbnail
+	// alone is cleaner.
+	if imgURL != "" && referencedMsg.Content == "" {
+		showText = false
+	}
 
-			if link != "lildisc://reply" {
-				return false
-			}
+	if showText || imgURL != "" {
+		inner := gtk.NewBox(gtk.OrientationHorizontal, 8)
 
-			if !c.ActivateAction("messages.scroll-to", gtkcord.NewMessageIDVariant(m.ID)) {
+		activateScroll := func() {
+			if !c.ActivateAction("messages.scroll-to",
+				gtkcord.NewMessageIDVariant(m.ID)) {
 				slog.Error(
 					"Failed to activate messages.scroll-to",
 					"id", m.ID)
 			}
+		}
 
-			return true
-		})
+		if showText {
+			singleLine := strings.ReplaceAll(preview, "\n", " ")
+			markup := fmt.Sprintf(
+				`<a href="lildisc://reply">%s</a>`,
+				html.EscapeString(singleLine),
+			)
 
-		box.Append(reply)
+			reply := gtk.NewLabel(markup)
+			reply.AddCSSClass("message-reply-content")
+			reply.SetUseMarkup(true)
+			reply.SetTooltipText(preview)
+			reply.SetEllipsize(pango.EllipsizeEnd)
+			reply.SetLines(1)
+			reply.SetXAlign(0)
+			reply.SetHExpand(true)
+			reply.ConnectActivateLink(func(link string) bool {
+				slog.Debug(
+					"Activated message reference link",
+					"link", link,
+					"message_id", m.ID,
+					"reference_id", referencedMsg.ID)
+
+				if link != "lildisc://reply" {
+					return false
+				}
+				activateScroll()
+				return true
+			})
+
+			inner.Append(reply)
+		}
+
+		if imgURL != "" {
+			thumb := onlineimage.NewPicture(c.ctx, imgutil.HTTPProvider)
+			thumb.AddCSSClass("message-reply-thumb")
+			thumb.SetSizeRequest(40, 40)
+			thumb.SetContentFit(gtk.ContentFitCover)
+			thumb.SetCanShrink(true)
+			thumb.SetHAlign(gtk.AlignEnd)
+			thumb.SetVAlign(gtk.AlignCenter)
+
+			src := imgProxy
+			if src == "" {
+				src = imgURL
+			}
+			thumb.SetURL(gtkcord.InjectSizeUnscaled(src, 80))
+
+			tooltip := "View referenced image"
+			if imgW > 0 && imgH > 0 {
+				tooltip = fmt.Sprintf("%dx%d", imgW, imgH)
+			}
+			thumb.SetTooltipText(tooltip)
+
+			click := gtk.NewGestureClick()
+			click.ConnectReleased(func(_ int, _, _ float64) { activateScroll() })
+			thumb.AddController(click)
+
+			inner.Append(thumb)
+		}
+
+		box.Append(inner)
 	}
 
 	if state.UserIsBlocked(referencedMsg.Author.ID) {
@@ -402,6 +463,51 @@ func (c *Content) newReplyBox(m *discord.Message) gtk.Widgetter {
 	}
 
 	return box
+}
+
+// replyImage finds the best preview image for a referenced message
+// used in a reply header. Returns empty strings and zero dimensions
+// when the message has no image-shaped content.
+func replyImage(msg *discord.Message) (url, proxy string, w, h uint) {
+	for i := range msg.Attachments {
+		a := &msg.Attachments[i]
+		if isImageAttachment(a) {
+			return string(a.URL), string(a.Proxy), a.Width, a.Height
+		}
+	}
+	for i := range msg.Embeds {
+		e := &msg.Embeds[i]
+		if e.Type != discord.ImageEmbed && e.Type != discord.GIFVEmbed {
+			continue
+		}
+		if e.Image != nil {
+			return string(e.Image.URL), string(e.Image.Proxy),
+				e.Image.Width, e.Image.Height
+		}
+		if e.Thumbnail != nil {
+			return string(e.Thumbnail.URL), string(e.Thumbnail.Proxy),
+				e.Thumbnail.Width, e.Thumbnail.Height
+		}
+	}
+	return "", "", 0, 0
+}
+
+func isImageAttachment(a *discord.Attachment) bool {
+	if strings.HasPrefix(a.ContentType, "image/") {
+		return true
+	}
+	if a.ContentType != "" {
+		return false
+	}
+	// Older messages and some clients omit ContentType — fall back to
+	// the filename extension.
+	lower := strings.ToLower(a.Filename)
+	for _, ext := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Content) newInteractionBox(m *discord.Message) gtk.Widgetter {

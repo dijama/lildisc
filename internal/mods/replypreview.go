@@ -2,6 +2,8 @@ package mods
 
 import (
 	"context"
+	"html"
+	"strings"
 
 	"github.com/diamondburned/arikawa/v3/discord"
 	"github.com/diamondburned/arikawa/v3/gateway"
@@ -91,6 +93,11 @@ func (bar *ReplyPreviewBar) ShowReply(ctx context.Context, msg *discord.Message)
 	state := gtkcord.FromContext(ctx)
 	authorMarkup := state.AuthorMarkup(&gateway.MessageCreateEvent{Message: *msg})
 	preview := state.MessagePreview(msg)
+	// Flatten newlines to single spaces for the single-line bar, and
+	// escape the plaintext preview — SetMarkup would otherwise treat
+	// "<" / "&" in quoted content as markup and silently drop chars.
+	preview = strings.ReplaceAll(preview, "\n", " ")
+	preview = html.EscapeString(preview)
 
 	bar.label.SetMarkup("Replying to <b>" + authorMarkup + "</b>: " + preview)
 	bar.Revealer.SetRevealChild(true)

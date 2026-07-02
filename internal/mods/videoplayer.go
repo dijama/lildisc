@@ -27,6 +27,31 @@ var enableYtdlp = prefs.NewBool(true, prefs.PropMeta{
 	Description: "Use yt-dlp to extract playable URLs from YouTube and other streaming sites for native in-app playback. Disable if yt-dlp is not installed.",
 })
 
+// mpvOnlyHosts are domains whose extracted media URLs require headers
+// (Referer, User-Agent, cookies) that the native viewer can't easily set.
+// For these, hand off to mpv directly — yt-dlp inside mpv applies the
+// correct headers when fetching the stream.
+var mpvOnlyHosts = []string{
+	"tiktok.com",
+	"www.tiktok.com",
+	"m.tiktok.com",
+	"vm.tiktok.com",
+	"vt.tiktok.com",
+}
+
+// PrefersMpv reports whether the URL belongs to a host where the native
+// viewer can't play the extracted stream URL (header-gated CDN), so mpv
+// should be used directly without extraction.
+func PrefersMpv(url string) bool {
+	lower := strings.ToLower(url)
+	for _, host := range mpvOnlyHosts {
+		if strings.Contains(lower, host) {
+			return true
+		}
+	}
+	return false
+}
+
 // videoHosts are domains where yt-dlp extraction or mpv+yt-dlp should be used.
 var videoHosts = []string{
 	"youtube.com",
@@ -44,6 +69,11 @@ var videoHosts = []string{
 	"www.streamable.com",
 	"vimeo.com",
 	"www.vimeo.com",
+	"tiktok.com",
+	"www.tiktok.com",
+	"m.tiktok.com",
+	"vm.tiktok.com",
+	"vt.tiktok.com",
 }
 
 // TryPlayVideo attempts to play a URL with mpv. Returns true if handled,
